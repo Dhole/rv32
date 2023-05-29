@@ -12,6 +12,7 @@ const FormatType = enum {
 const Opcode = enum {
     const Self = @This();
 
+    // I
     LUI,
     AUIPC,
     JAL,
@@ -53,63 +54,77 @@ const Opcode = enum {
     ECALL,
     EBREAK,
 
+    // “Zicsr”, Control and Status Register (CSR) Instructions, Version 2.0
+    CSRRW,
+    CSRRS,
+    CSRRC,
+    CSRRWI,
+    CSRRSI,
+    CSRRCI,
+
     fn format_type(self: Self) FormatType {
         return switch (self) {
-            Self.LUI, Self.AUIPC => FormatType.U,
-            Self.JAL => FormatType.J,
-            Self.JALR => FormatType.I,
-            Self.BEQ, Self.BNE, Self.BLT, Self.BGE, Self.BLTU, Self.BGEU => FormatType.B,
-            Self.LB, Self.LH, Self.LW, Self.LBU, Self.LHU => FormatType.I,
-            Self.SB, Self.SH, Self.SW => FormatType.S,
-            Self.ADDI, Self.SLTI, Self.SLTIU, Self.XORI, Self.ORI, Self.ANDI => FormatType.I,
-            Self.SLLI, Self.SRLI, Self.SRAI => FormatType.I,
-            Self.ADD, Self.SUB, Self.SLL, Self.SLT, Self.SLTU, Self.XOR, Self.SRL, Self.SRA, Self.OR, Self.AND => FormatType.R,
-            Self.FENCE, Self.ECALL, Self.EBREAK => FormatType.I,
+            .LUI, .AUIPC => FormatType.U,
+            .JAL => FormatType.J,
+            .JALR => FormatType.I,
+            .BEQ, .BNE, .BLT, .BGE, .BLTU, .BGEU => FormatType.B,
+            .LB, .LH, .LW, .LBU, .LHU => FormatType.I,
+            .SB, .SH, .SW => FormatType.S,
+            .ADDI, .SLTI, .SLTIU, .XORI, .ORI, .ANDI => FormatType.I,
+            .SLLI, .SRLI, .SRAI => FormatType.I,
+            .ADD, .SUB, .SLL, .SLT, .SLTU, .XOR, .SRL, .SRA, .OR, .AND => FormatType.R,
+            .FENCE, .ECALL, .EBREAK, .CSRRW, .CSRRS, .CSRRC, .CSRRWI, .CSRRSI, .CSRRCI => FormatType.I,
         };
     }
 
     fn str(self: Self) []const u8 {
         return switch (self) {
-            Self.LUI => "LUI",
-            Self.AUIPC => "AUIPC",
-            Self.JAL => "JAL",
-            Self.JALR => "JALR",
-            Self.BEQ => "BEQ",
-            Self.BNE => "BNE",
-            Self.BLT => "BLT",
-            Self.BGE => "BGE",
-            Self.BLTU => "BLTU",
-            Self.BGEU => "BGEU",
-            Self.LB => "LB",
-            Self.LH => "LH",
-            Self.LW => "LW",
-            Self.LBU => "LBU",
-            Self.LHU => "LHU",
-            Self.SB => "SB",
-            Self.SH => "SH",
-            Self.SW => "SW",
-            Self.ADDI => "ADDI",
-            Self.SLTI => "SLTI",
-            Self.SLTIU => "SLTIU",
-            Self.XORI => "XORI",
-            Self.ORI => "ORI",
-            Self.ANDI => "ANDI",
-            Self.SLLI => "SLLI",
-            Self.SRLI => "SRLI",
-            Self.SRAI => "SRAI",
-            Self.ADD => "ADD",
-            Self.SUB => "SUB",
-            Self.SLL => "SLL",
-            Self.SLT => "SLT",
-            Self.SLTU => "SLTU",
-            Self.XOR => "XOR",
-            Self.SRL => "SRL",
-            Self.SRA => "SRA",
-            Self.OR => "OR",
-            Self.AND => "AND",
-            Self.FENCE => "FENCE",
-            Self.ECALL => "ECALL",
-            Self.EBREAK => "EBREAK",
+            .LUI => "LUI",
+            .AUIPC => "AUIPC",
+            .JAL => "JAL",
+            .JALR => "JALR",
+            .BEQ => "BEQ",
+            .BNE => "BNE",
+            .BLT => "BLT",
+            .BGE => "BGE",
+            .BLTU => "BLTU",
+            .BGEU => "BGEU",
+            .LB => "LB",
+            .LH => "LH",
+            .LW => "LW",
+            .LBU => "LBU",
+            .LHU => "LHU",
+            .SB => "SB",
+            .SH => "SH",
+            .SW => "SW",
+            .ADDI => "ADDI",
+            .SLTI => "SLTI",
+            .SLTIU => "SLTIU",
+            .XORI => "XORI",
+            .ORI => "ORI",
+            .ANDI => "ANDI",
+            .SLLI => "SLLI",
+            .SRLI => "SRLI",
+            .SRAI => "SRAI",
+            .ADD => "ADD",
+            .SUB => "SUB",
+            .SLL => "SLL",
+            .SLT => "SLT",
+            .SLTU => "SLTU",
+            .XOR => "XOR",
+            .SRL => "SRL",
+            .SRA => "SRA",
+            .OR => "OR",
+            .AND => "AND",
+            .FENCE => "FENCE",
+            .ECALL => "ECALL",
+            .EBREAK => "EBREAK",
+            .CSRRW => "CSRRW",
+            .CSRRS => "CSRRS",
+            .CSRRC => "CSRRC",
+            .CSRRWI => "CSRRWI",
+            .CSRRSI => "CSRRSI",
+            .CSRRCI => "CSRRCI",
         };
     }
 };
@@ -137,22 +152,22 @@ const Instruction = struct {
             self.op.str(),
         });
         switch (format_type) {
-            FormatType.R => {
+            .R => {
                 try writer.print(" x{} x{} x{}", .{ self.rd, self.rs1, self.rs2 });
             },
-            FormatType.I => {
+            .I => {
                 try writer.print(" x{} x{} 0x{x}", .{ self.rd, self.rs1, self.imm });
             },
-            FormatType.S => {
+            .S => {
                 try writer.print(" x{} x{} 0x{x}", .{ self.rs1, self.rs2, self.imm });
             },
-            FormatType.B => {
+            .B => {
                 try writer.print(" x{} x{} 0x{x}", .{ self.rs1, self.rs2, self.imm });
             },
-            FormatType.U => {
+            .U => {
                 try writer.print(" x{}  0x{x}", .{ self.rd, self.imm });
             },
-            FormatType.J => {
+            .J => {
                 try writer.print(" x{}  0x{x}", .{ self.rd, self.imm });
             },
         }
@@ -161,9 +176,10 @@ const Instruction = struct {
 
 const MASK_OPCODE: u32 = 0b00000000000000000000000001111111;
 const MASK_FUNCT3: u32 = 0b00000000000000000111000000000000;
-const SHIFT_FUNCT3: u5 = 11;
+const SHIFT_FUNCT3: u5 = 12;
 const MASK_IMM_HI: u32 = 0b11111110000000000000000000000000;
-const SHIFT_IMM_HI: u5 = 24;
+const SHIFT_IMM_HI: u5 = 25;
+const MASK_7_31: u32 = 0b11111111111111111111111100000000;
 
 const RV32I_OPCODE = enum(u32) {
     LUI = 0b0110111,
@@ -175,11 +191,11 @@ const RV32I_OPCODE = enum(u32) {
     LOAD = 0b0000011, // LB, LH, LW, LBU, LHU
     STORE = 0b0100011, // SB, SH, SW
     // Integer Register-Immediate Instructions
-    OPIMM = 0b001001, // ADDI, SLTI, SLTIU, XORI, ORI, ANDI, SLLI, SRLI, SRAI
+    OPIMM = 0b0010011, // ADDI, SLTI, SLTIU, XORI, ORI, ANDI, SLLI, SRLI, SRAI
     // Integer Register Register Operations
     OP = 0b0110011, // ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND
     FENCE = 0b0001111,
-    SYSTEM = 0b11110011, // ECALL, EBREAK
+    SYSTEM = 0b1110011, // ECALL, EBREAK, CSR*
 };
 
 const JALR_FUNCT3: u32 = 0b000;
@@ -246,45 +262,57 @@ const SR_IMM_HI = enum(u32) {
     SRA = 0b0100000,
 };
 
-const ECALL_7_31: u32 = 0b00000000000000000000000000000000;
-const EBREAK_7_31: u32 = 0b00000000000100000000000000000000;
+const SYSTEM_FUNCT3 = enum(u32) {
+    PRIV = 0b000,
+    CSRRW = 0b001,
+    CSRRS = 0b010,
+    CSRRC = 0b011,
+    CSRRWI = 0b101,
+    CSRRSI = 0b110,
+    CSRRCI = 0b111,
+};
+
+const PRIV_7_31 = enum(u32) {
+    ECALL = 0b00000000000000000000000000000000,
+    EBREAK = 0b00000000000100000000000000000000,
+};
 
 fn decode_opcode(ins: u32) u8 {
     return @intCast(u8, ins & 0b00000000000000000000000001111111);
 }
 // 'rd' is register destination
 fn decode_rd(ins: u32) u8 {
-    return @intCast(u8, (ins & 0b00000000000000000000111110000000) >> 6);
+    return @intCast(u8, (ins & 0b00000000000000000000111110000000) >> 7);
 }
 fn decode_funct3(ins: u32) u8 {
-    return @intCast(u8, (ins & 0b00000000000000000111000000000000) >> 11);
+    return @intCast(u8, (ins & 0b00000000000000000111000000000000) >> 12);
 }
 // 'rs1' is register source 1
 fn decode_rs1(ins: u32) u8 {
-    return @intCast(u8, (ins & 0b00000000000011111000000000000000) >> 14);
+    return @intCast(u8, (ins & 0b00000000000011111000000000000000) >> 15);
 }
 // 'rs1' is register source 2
 fn decode_rs2(ins: u32) u8 {
-    return @intCast(u8, (ins & 0b00000001111100000000000000000000) >> 19);
+    return @intCast(u8, (ins & 0b00000001111100000000000000000000) >> 20);
 }
 fn decode_funct7(ins: u32) u8 {
-    return @intCast(u8, (ins & 0b11111110000000000000000000000000) >> 24);
+    return @intCast(u8, (ins & 0b11111110000000000000000000000000) >> 25);
 }
 // 12 bits, sign-extended
 fn decode_i_imm(ins: u32) i32 {
     @setRuntimeSafety(false);
-    return @intCast(i32, ins & 0b11111111111100000000000000000000) >> (19 + 1);
+    return @intCast(i32, ins & 0b11111111111100000000000000000000) >> 20;
 }
 // 5 bits
 fn decode_i_imm_lo(ins: u32) u8 {
     @setRuntimeSafety(false);
-    return @intCast(u8, @intCast(u32, ins & 0b00000001111100000000000000000000) >> (19 + 1));
+    return @intCast(u8, @intCast(u32, ins & 0b00000001111100000000000000000000) >> 20);
 }
 // 12 bits, sign-extended
 fn decode_s_imm(ins: u32) i32 {
     @setRuntimeSafety(false);
-    return @intCast(i32, ins & 0b11111110000000000000000000000000) >> (24 - 5 + 1) |
-        @intCast(i32, ins & 0b00000000000000000000111110000000) >> 6 + 1;
+    return @intCast(i32, ins & 0b11111110000000000000000000000000) >> (25 - 5) |
+        @intCast(i32, ins & 0b00000000000000000000111110000000) >> 7;
 }
 // 32 bits, sign-extended
 fn decode_u_imm(ins: u32) i32 {
@@ -294,18 +322,18 @@ fn decode_u_imm(ins: u32) i32 {
 // 12 bits, sign-extended
 fn decode_b_imm(ins: u32) i32 {
     @setRuntimeSafety(false);
-    return @intCast(i32, ins & 0b10000000000000000000000000000000) >> (30 - 12 + 1) |
-        @intCast(i32, ins & 0b01111110000000000000000000000000) >> (24 - 5 + 1) |
-        @intCast(i32, ins & 0b00000000000000000000111100000000) >> (7 - 1 + 1) |
-        @intCast(i32, ins & 0b00000000000000000000000010000000) << -(6 - 11 + 1);
+    return @intCast(i32, ins & 0b10000000000000000000000000000000) >> (31 - 12) |
+        @intCast(i32, ins & 0b01111110000000000000000000000000) >> (25 - 5) |
+        @intCast(i32, ins & 0b00000000000000000000111100000000) >> (8 - 1) |
+        @intCast(i32, ins & 0b00000000000000000000000010000000) << -(7 - 11);
 }
 // 32 bits, sign-extended
 fn decode_j_imm(ins: u32) i32 {
     @setRuntimeSafety(false);
-    return @intCast(i32, ins & 0b10000000000000000000000000000000) >> (30 - 20 + 1) |
-        @intCast(i32, ins & 0b01111111111000000000000000000000) >> (20 - 1 + 1) |
-        @intCast(i32, ins & 0b00000000000100000000000000000000) >> (19 - 11 + 1) |
-        @intCast(i32, ins & 0b00000000000011111111000000000000) >> (11 - 12 + 1);
+    return @intCast(i32, ins & 0b10000000000000000000000000000000) >> (31 - 20) |
+        @intCast(i32, ins & 0b01111111111000000000000000000000) >> (21 - 1) |
+        @intCast(i32, ins & 0b00000000000100000000000000000000) >> (20 - 11) |
+        @intCast(i32, ins & 0b00000000000011111111000000000000) >> (12 - 12);
 }
 
 fn decode(comptime T: type, self: *T, ins: u32) T.ReturnType {
@@ -465,12 +493,33 @@ fn decode(comptime T: type, self: *T, ins: u32) T.ReturnType {
         @enumToInt(RV32I_OPCODE.FENCE) => {
             @import("std").debug.panic("Unimplemented", .{});
         },
-        @enumToInt(RV32I_OPCODE.SYSTEM) => {},
+        @enumToInt(RV32I_OPCODE.SYSTEM) => {
+            // I-Type
+            const rd = decode_rd(ins);
+            const rs1 = decode_rs1(ins);
+            const imm = decode_i_imm(ins);
+            return switch (ins & MASK_FUNCT3) {
+                @enumToInt(SYSTEM_FUNCT3.PRIV) << SHIFT_FUNCT3 => {
+                    return switch (ins & MASK_7_31) {
+                        @enumToInt(PRIV_7_31.ECALL) << 7 => self.op_ecall(),
+                        @enumToInt(PRIV_7_31.EBREAK) << 7 => self.op_ebreak(),
+                        else => @import("std").debug.panic("Invalid", .{}),
+                    };
+                },
+                @enumToInt(SYSTEM_FUNCT3.CSRRW) << SHIFT_FUNCT3 => self.op_csrrw(rd, rs1, imm),
+                @enumToInt(SYSTEM_FUNCT3.CSRRS) << SHIFT_FUNCT3 => self.op_csrrs(rd, rs1, imm),
+                @enumToInt(SYSTEM_FUNCT3.CSRRC) << SHIFT_FUNCT3 => self.op_csrrc(rd, rs1, imm),
+                @enumToInt(SYSTEM_FUNCT3.CSRRWI) << SHIFT_FUNCT3 => self.op_csrrwi(rd, rs1, imm),
+                @enumToInt(SYSTEM_FUNCT3.CSRRSI) << SHIFT_FUNCT3 => self.op_csrrsi(rd, rs1, imm),
+                @enumToInt(SYSTEM_FUNCT3.CSRRCI) << SHIFT_FUNCT3 => self.op_csrrci(rd, rs1, imm),
+                else => @import("std").debug.panic("Invalid {b:0>3}", .{(ins & MASK_FUNCT3) >> SHIFT_FUNCT3}),
+            };
+        },
         else => {
-            @import("std").debug.panic("Invalid", .{});
+            @import("std").debug.panic("Invalid {b:0>7}", .{ins & MASK_OPCODE});
         },
     }
-    @import("std").debug.panic("Invalid", .{});
+    @import("std").debug.panic("Unreachable", .{});
 }
 
 const Decoder = struct {
@@ -498,151 +547,183 @@ const Decoder = struct {
 
     fn op_addi(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
         _ = self;
-        return i_type(Opcode.ADDI, rd, rs1, imm);
+        return i_type(.ADDI, rd, rs1, imm);
     }
     fn op_slti(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
         _ = self;
-        return i_type(Opcode.SLTI, rd, rs1, imm);
+        return i_type(.SLTI, rd, rs1, imm);
     }
     fn op_sltiu(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
         _ = self;
-        return i_type(Opcode.SLTIU, rd, rs1, imm);
+        return i_type(.SLTIU, rd, rs1, imm);
     }
     fn op_andi(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
         _ = self;
-        return i_type(Opcode.ANDI, rd, rs1, imm);
+        return i_type(.ANDI, rd, rs1, imm);
     }
     fn op_ori(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
         _ = self;
-        return i_type(Opcode.ORI, rd, rs1, imm);
+        return i_type(.ORI, rd, rs1, imm);
     }
     fn op_xori(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
         _ = self;
-        return i_type(Opcode.XORI, rd, rs1, imm);
+        return i_type(.XORI, rd, rs1, imm);
     }
     fn op_slli(self: *Self, rd: u8, rs1: u8, shamt: u8) Instruction {
         _ = self;
-        return i_type(Opcode.SLLI, rd, rs1, @intCast(i32, shamt));
+        return i_type(.SLLI, rd, rs1, @intCast(i32, shamt));
     }
     fn op_srli(self: *Self, rd: u8, rs1: u8, shamt: u8) Instruction {
         _ = self;
-        return i_type(Opcode.SRLI, rd, rs1, @intCast(i32, shamt));
+        return i_type(.SRLI, rd, rs1, @intCast(i32, shamt));
     }
     fn op_srai(self: *Self, rd: u8, rs1: u8, shamt: u8) Instruction {
         _ = self;
-        return i_type(Opcode.SRAI, rd, rs1, @intCast(i32, shamt));
+        return i_type(.SRAI, rd, rs1, @intCast(i32, shamt));
     }
     fn op_lui(self: *Self, rd: u8, imm: i32) Instruction {
         _ = self;
-        return u_type(Opcode.LUI, rd, imm);
+        return u_type(.LUI, rd, imm);
     }
     fn op_auipc(self: *Self, rd: u8, imm: i32) Instruction {
         _ = self;
-        return u_type(Opcode.AUIPC, rd, imm);
+        return u_type(.AUIPC, rd, imm);
     }
     fn op_add(self: *Self, rd: u8, rs1: u8, rs2: u8) Instruction {
         _ = self;
-        return r_type(Opcode.ADD, rd, rs1, rs2);
+        return r_type(.ADD, rd, rs1, rs2);
     }
     fn op_sub(self: *Self, rd: u8, rs1: u8, rs2: u8) Instruction {
         _ = self;
-        return r_type(Opcode.SUB, rd, rs1, rs2);
+        return r_type(.SUB, rd, rs1, rs2);
     }
     fn op_slt(self: *Self, rd: u8, rs1: u8, rs2: u8) Instruction {
         _ = self;
-        return r_type(Opcode.SLT, rd, rs1, rs2);
+        return r_type(.SLT, rd, rs1, rs2);
     }
     fn op_sltu(self: *Self, rd: u8, rs1: u8, rs2: u8) Instruction {
         _ = self;
-        return r_type(Opcode.SLTU, rd, rs1, rs2);
+        return r_type(.SLTU, rd, rs1, rs2);
     }
     fn op_and(self: *Self, rd: u8, rs1: u8, rs2: u8) Instruction {
         _ = self;
-        return r_type(Opcode.AND, rd, rs1, rs2);
+        return r_type(.AND, rd, rs1, rs2);
     }
     fn op_or(self: *Self, rd: u8, rs1: u8, rs2: u8) Instruction {
         _ = self;
-        return r_type(Opcode.OR, rd, rs1, rs2);
+        return r_type(.OR, rd, rs1, rs2);
     }
     fn op_xor(self: *Self, rd: u8, rs1: u8, rs2: u8) Instruction {
         _ = self;
-        return r_type(Opcode.XOR, rd, rs1, rs2);
+        return r_type(.XOR, rd, rs1, rs2);
     }
     fn op_sll(self: *Self, rd: u8, rs1: u8, rs2: u8) Instruction {
         _ = self;
-        return r_type(Opcode.SLL, rd, rs1, rs2);
+        return r_type(.SLL, rd, rs1, rs2);
     }
     fn op_srl(self: *Self, rd: u8, rs1: u8, rs2: u8) Instruction {
         _ = self;
-        return r_type(Opcode.SRL, rd, rs1, rs2);
+        return r_type(.SRL, rd, rs1, rs2);
     }
     fn op_sra(self: *Self, rd: u8, rs1: u8, rs2: u8) Instruction {
         _ = self;
-        return r_type(Opcode.SRA, rd, rs1, rs2);
+        return r_type(.SRA, rd, rs1, rs2);
     }
     fn op_jal(self: *Self, rd: u8, imm: i32) Instruction {
         _ = self;
-        return j_type(Opcode.JAL, rd, imm);
+        return j_type(.JAL, rd, imm);
     }
     fn op_jalr(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
         _ = self;
-        return i_type(Opcode.JALR, rd, rs1, imm);
+        return i_type(.JALR, rd, rs1, imm);
     }
     fn op_beq(self: *Self, rs1: u8, rs2: u8, imm: i32) Instruction {
         _ = self;
-        return b_type(Opcode.BEQ, rs1, rs2, imm);
+        return b_type(.BEQ, rs1, rs2, imm);
     }
     fn op_bne(self: *Self, rs1: u8, rs2: u8, imm: i32) Instruction {
         _ = self;
-        return b_type(Opcode.BEQ, rs1, rs2, imm);
+        return b_type(.BEQ, rs1, rs2, imm);
     }
     fn op_blt(self: *Self, rs1: u8, rs2: u8, imm: i32) Instruction {
         _ = self;
-        return b_type(Opcode.BEQ, rs1, rs2, imm);
+        return b_type(.BEQ, rs1, rs2, imm);
     }
     fn op_bltu(self: *Self, rs1: u8, rs2: u8, imm: i32) Instruction {
         _ = self;
-        return b_type(Opcode.BEQ, rs1, rs2, imm);
+        return b_type(.BEQ, rs1, rs2, imm);
     }
     fn op_bge(self: *Self, rs1: u8, rs2: u8, imm: i32) Instruction {
         _ = self;
-        return b_type(Opcode.BEQ, rs1, rs2, imm);
+        return b_type(.BEQ, rs1, rs2, imm);
     }
     fn op_bgeu(self: *Self, rs1: u8, rs2: u8, imm: i32) Instruction {
         _ = self;
-        return b_type(Opcode.BEQ, rs1, rs2, imm);
+        return b_type(.BEQ, rs1, rs2, imm);
     }
     fn op_lw(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
         _ = self;
-        return i_type(Opcode.BEQ, rd, rs1, imm);
+        return i_type(.BEQ, rd, rs1, imm);
     }
     fn op_lh(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
         _ = self;
-        return i_type(Opcode.BEQ, rd, rs1, imm);
+        return i_type(.BEQ, rd, rs1, imm);
     }
     fn op_lhu(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
         _ = self;
-        return i_type(Opcode.BEQ, rd, rs1, imm);
+        return i_type(.BEQ, rd, rs1, imm);
     }
     fn op_lb(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
         _ = self;
-        return i_type(Opcode.BEQ, rd, rs1, imm);
+        return i_type(.BEQ, rd, rs1, imm);
     }
     fn op_lbu(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
         _ = self;
-        return i_type(Opcode.BEQ, rd, rs1, imm);
+        return i_type(.BEQ, rd, rs1, imm);
     }
     fn op_sw(self: *Self, rs1: u8, rs2: u8, imm: i32) Instruction {
         _ = self;
-        return s_type(Opcode.BEQ, rs1, rs2, imm);
+        return s_type(.BEQ, rs1, rs2, imm);
     }
     fn op_sh(self: *Self, rs1: u8, rs2: u8, imm: i32) Instruction {
         _ = self;
-        return s_type(Opcode.BEQ, rs1, rs2, imm);
+        return s_type(.BEQ, rs1, rs2, imm);
     }
     fn op_sb(self: *Self, rs1: u8, rs2: u8, imm: i32) Instruction {
         _ = self;
-        return s_type(Opcode.BEQ, rs1, rs2, imm);
+        return s_type(.BEQ, rs1, rs2, imm);
+    }
+    fn op_ecall(self: *Self) Instruction {
+        _ = self;
+        return Instruction{ .op = .ECALL, .rd = 0, .rs1 = 0, .rs2 = 0, .imm = 0 };
+    }
+    fn op_ebreak(self: *Self) Instruction {
+        _ = self;
+        return Instruction{ .op = .EBREAK, .rd = 0, .rs1 = 0, .rs2 = 0, .imm = 0 };
+    }
+    fn op_csrrw(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
+        _ = self;
+        return i_type(.CSRRW, rd, rs1, imm);
+    }
+    fn op_csrrs(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
+        _ = self;
+        return i_type(.CSRRS, rd, rs1, imm);
+    }
+    fn op_csrrc(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
+        _ = self;
+        return i_type(.CSRRC, rd, rs1, imm);
+    }
+    fn op_csrrwi(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
+        _ = self;
+        return i_type(.CSRRWI, rd, rs1, imm);
+    }
+    fn op_csrrsi(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
+        _ = self;
+        return i_type(.CSRRSI, rd, rs1, imm);
+    }
+    fn op_csrrci(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
+        _ = self;
+        return i_type(.CSRRCI, rd, rs1, imm);
     }
 };
 
@@ -911,17 +992,30 @@ const Cpu = struct {
 };
 
 pub fn main() !void {
-    {
-        @setRuntimeSafety(false);
-        // var a: u32 = 0b11111110000000000000000000000000;
-        var a: u32 = 0b11000000000000000000000000000000;
-        var b: u32 = 0b11110000000000000000000000000000;
-        std.debug.print("Hello, {d}!\n", .{@intCast(i32, a) & 0b01000000000000000000000000000000});
-        std.debug.print("Hello, {d}!\n", .{@intCast(i32, b)});
-        std.debug.print("Hello, {d}!\n", .{@intCast(i32, a) >> 2});
-        // std.debug.print("Hello, {b}!\n", .{@ptrCast(*i32, &a).* >> 0});
-        // std.debug.print("Hello, {b}!\n", .{@ptrCast(*i32, &a).* >> 1});
-        // std.debug.print("Hello, {b}!\n", .{@ptrCast(*i32, &a).* >> 2});
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    std.debug.print("Arguments: {s}\n", .{args});
+
+    const rom_path = args[1];
+    var rom_file = try std.fs.cwd().openFile(rom_path, .{ .mode = .read_only });
+    defer rom_file.close();
+
+    var buf: [4]u8 = undefined;
+    try rom_file.seekTo(0);
+    while (true) {
+        const read = try rom_file.read(&buf);
+        if (read != buf.len) {
+            break;
+        }
+        const word = std.mem.readInt(u32, &buf, .Little);
+        std.debug.print("0b{b:0>32} ", .{word});
+        const ins = Cpu.decode_ins(word);
+        std.debug.print("{}\n", .{ins});
     }
 }
 
