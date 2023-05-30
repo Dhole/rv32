@@ -62,6 +62,12 @@ const Opcode = enum {
     CSRRSI,
     CSRRCI,
 
+    // Privileged Instruction Set
+    URET,
+    SRET,
+    MRET,
+    WFI,
+
     fn format_type(self: Self) FormatType {
         return switch (self) {
             .LUI, .AUIPC => FormatType.U,
@@ -73,7 +79,7 @@ const Opcode = enum {
             .ADDI, .SLTI, .SLTIU, .XORI, .ORI, .ANDI => FormatType.I,
             .SLLI, .SRLI, .SRAI => FormatType.I,
             .ADD, .SUB, .SLL, .SLT, .SLTU, .XOR, .SRL, .SRA, .OR, .AND => FormatType.R,
-            .FENCE, .ECALL, .EBREAK, .CSRRW, .CSRRS, .CSRRC, .CSRRWI, .CSRRSI, .CSRRCI => FormatType.I,
+            .FENCE, .ECALL, .EBREAK, .CSRRW, .CSRRS, .CSRRC, .CSRRWI, .CSRRSI, .CSRRCI, .URET, .SRET, .MRET, .WFI => FormatType.I,
         };
     }
 
@@ -125,6 +131,10 @@ const Opcode = enum {
             .CSRRWI => "CSRRWI",
             .CSRRSI => "CSRRSI",
             .CSRRCI => "CSRRCI",
+            .URET => "URET",
+            .SRET => "SRET",
+            .MRET => "MRET",
+            .WFI => "WFI",
         };
     }
 };
@@ -177,13 +187,15 @@ const Instruction = struct {
 const MASK_OPCODE: u32 = 0b00000000000000000000000001111111;
 const MASK_FUNCT3: u32 = 0b00000000000000000111000000000000;
 const SHIFT_FUNCT3: u5 = 12;
+const MASK_FUNCT12: u32 = 0b11111111111100000000000000000000;
+const SHIFT_FUNCT12: u5 = 20;
 const MASK_IMM_HI: u32 = 0b11111110000000000000000000000000;
 const SHIFT_IMM_HI: u5 = 25;
 const MASK_7_31: u32 = 0b11111111111111111111111100000000;
 
 const RV32I_OPCODE = enum(u32) {
     LUI = 0b0110111,
-    AUIPC = 0b001011,
+    AUIPC = 0b0010111,
     JAL = 0b1101111,
     JALR = 0b1100111,
     // Conditional Branches
@@ -194,7 +206,7 @@ const RV32I_OPCODE = enum(u32) {
     OPIMM = 0b0010011, // ADDI, SLTI, SLTIU, XORI, ORI, ANDI, SLLI, SRLI, SRAI
     // Integer Register Register Operations
     OP = 0b0110011, // ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND
-    FENCE = 0b0001111,
+    MISC_MEM = 0b0001111,
     SYSTEM = 0b1110011, // ECALL, EBREAK, CSR*
 };
 
@@ -252,6 +264,8 @@ const OP_FUNCT3 = enum(u32) {
     AND = 0b111,
 };
 
+const FENCE_FUNCT3: u32 = 0b000;
+
 const ADDSUB_IMM_HI = enum(u32) {
     ADD = 0b0000000,
     SUB = 0b0100000,
@@ -272,9 +286,13 @@ const SYSTEM_FUNCT3 = enum(u32) {
     CSRRCI = 0b111,
 };
 
-const PRIV_7_31 = enum(u32) {
-    ECALL = 0b00000000000000000000000000000000,
-    EBREAK = 0b00000000000100000000000000000000,
+const PRIV_FUNCT12 = enum(u32) {
+    ECALL = 0b000000000000,
+    EBREAK = 0b000000000001,
+    URET = 0b000000000010,
+    SRET = 0b000100000010,
+    MRET = 0b001100000010,
+    WFI = 0b000100000101,
 };
 
 fn decode_opcode(ins: u32) u8 {
@@ -490,8 +508,14 @@ fn decode(comptime T: type, self: *T, ins: u32) T.ReturnType {
                 else => @import("std").debug.panic("Invalid", .{}),
             };
         },
-        @enumToInt(RV32I_OPCODE.FENCE) => {
-            @import("std").debug.panic("Unimplemented", .{});
+        @enumToInt(RV32I_OPCODE.MISC_MEM) => {
+            const rd = decode_rd(ins);
+            const rs1 = decode_rs1(ins);
+            const imm = decode_i_imm(ins);
+            return switch (ins & MASK_FUNCT3) {
+                FENCE_FUNCT3 << SHIFT_FUNCT3 => self.op_fence(rd, rs1, imm),
+                else => @import("std").debug.panic("Invalid MISC_MEM FUNCT3 {b:0>3}", .{(ins & MASK_FUNCT3) >> SHIFT_FUNCT3}),
+            };
         },
         @enumToInt(RV32I_OPCODE.SYSTEM) => {
             // I-Type
@@ -500,11 +524,19 @@ fn decode(comptime T: type, self: *T, ins: u32) T.ReturnType {
             const imm = decode_i_imm(ins);
             return switch (ins & MASK_FUNCT3) {
                 @enumToInt(SYSTEM_FUNCT3.PRIV) << SHIFT_FUNCT3 => {
-                    return switch (ins & MASK_7_31) {
-                        @enumToInt(PRIV_7_31.ECALL) << 7 => self.op_ecall(),
-                        @enumToInt(PRIV_7_31.EBREAK) << 7 => self.op_ebreak(),
-                        else => @import("std").debug.panic("Invalid", .{}),
-                    };
+                    if (rd == 0 and rs1 == 0) {
+                        return switch (ins & MASK_FUNCT12) {
+                            @enumToInt(PRIV_FUNCT12.ECALL) << SHIFT_FUNCT12 => self.op_ecall(),
+                            @enumToInt(PRIV_FUNCT12.EBREAK) << SHIFT_FUNCT12 => self.op_ebreak(),
+                            @enumToInt(PRIV_FUNCT12.URET) << SHIFT_FUNCT12 => self.op_uret(),
+                            @enumToInt(PRIV_FUNCT12.SRET) << SHIFT_FUNCT12 => self.op_sret(),
+                            @enumToInt(PRIV_FUNCT12.MRET) << SHIFT_FUNCT12 => self.op_mret(),
+                            @enumToInt(PRIV_FUNCT12.WFI) << SHIFT_FUNCT12 => self.op_wfi(),
+                            else => @import("std").debug.panic("Invalid SYSTEM PRIV FUNCT12={b:0>12}", .{(ins & MASK_FUNCT12) >> SHIFT_FUNCT12}),
+                        };
+                    } else {
+                        @import("std").debug.panic("Invalid SYSTEM PRIV rd={}, rs1={}", .{ rd, rs1 });
+                    }
                 },
                 @enumToInt(SYSTEM_FUNCT3.CSRRW) << SHIFT_FUNCT3 => self.op_csrrw(rd, rs1, imm),
                 @enumToInt(SYSTEM_FUNCT3.CSRRS) << SHIFT_FUNCT3 => self.op_csrrs(rd, rs1, imm),
@@ -512,11 +544,11 @@ fn decode(comptime T: type, self: *T, ins: u32) T.ReturnType {
                 @enumToInt(SYSTEM_FUNCT3.CSRRWI) << SHIFT_FUNCT3 => self.op_csrrwi(rd, rs1, imm),
                 @enumToInt(SYSTEM_FUNCT3.CSRRSI) << SHIFT_FUNCT3 => self.op_csrrsi(rd, rs1, imm),
                 @enumToInt(SYSTEM_FUNCT3.CSRRCI) << SHIFT_FUNCT3 => self.op_csrrci(rd, rs1, imm),
-                else => @import("std").debug.panic("Invalid {b:0>3}", .{(ins & MASK_FUNCT3) >> SHIFT_FUNCT3}),
+                else => @import("std").debug.panic("Invalid SYSTEM FUNCT3={b:0>3}", .{(ins & MASK_FUNCT3) >> SHIFT_FUNCT3}),
             };
         },
         else => {
-            @import("std").debug.panic("Invalid {b:0>7}", .{ins & MASK_OPCODE});
+            @import("std").debug.panic("Invalid OPCODE={b:0>7}", .{ins & MASK_OPCODE});
         },
     }
     @import("std").debug.panic("Unreachable", .{});
@@ -724,6 +756,26 @@ const Decoder = struct {
     fn op_csrrci(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
         _ = self;
         return i_type(.CSRRCI, rd, rs1, imm);
+    }
+    fn op_fence(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
+        _ = self;
+        return i_type(.FENCE, rd, rs1, imm);
+    }
+    fn op_uret(self: *Self) Instruction {
+        _ = self;
+        return Instruction{ .op = .URET, .rd = 0, .rs1 = 0, .rs2 = 0, .imm = 0 };
+    }
+    fn op_sret(self: *Self) Instruction {
+        _ = self;
+        return Instruction{ .op = .SRET, .rd = 0, .rs1 = 0, .rs2 = 0, .imm = 0 };
+    }
+    fn op_mret(self: *Self) Instruction {
+        _ = self;
+        return Instruction{ .op = .MRET, .rd = 0, .rs1 = 0, .rs2 = 0, .imm = 0 };
+    }
+    fn op_wfi(self: *Self) Instruction {
+        _ = self;
+        return Instruction{ .op = .WFI, .rd = 0, .rs1 = 0, .rs2 = 0, .imm = 0 };
     }
 };
 
