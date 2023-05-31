@@ -1,4 +1,11 @@
 const std = @import("std");
+const debug = std.debug;
+const log = std.log;
+
+fn log_debug(src: std.builtin.SourceLocation, comptime fmt: []const u8, args: anytype) void {
+    log.debug(fmt, args);
+    log.debug("at {s}:{}", .{ src.file, src.line });
+}
 
 const FormatType = enum {
     R,
@@ -157,28 +164,52 @@ const Instruction = struct {
         _ = fmt;
         _ = options;
 
-        const format_type = self.op.format_type();
+        switch (self.op) {
+            .ADDI => {
+                if (self.rd == 0 and self.rs1 == 0 and self.imm == 0) {
+                    try writer.print("NOP", .{});
+                    return;
+                } else if (self.rs1 == 0) {
+                    try writer.print("LI x{}, 0x{x}", .{ self.rd, self.imm });
+                    return;
+                }
+            },
+            .CSRRS => {
+                if (self.rs1 == 0) {
+                    try writer.print("CSRR x{}, 0x{x}", .{ self.rd, self.imm });
+                    return;
+                }
+            },
+            .JAL => {
+                if (self.rd == 0) {
+                    try writer.print("J 0x{x}", .{self.imm});
+                    return;
+                }
+            },
+            else => {},
+        }
         try writer.print("{s}", .{
             self.op.str(),
         });
+        const format_type = self.op.format_type();
         switch (format_type) {
             .R => {
-                try writer.print(" x{} x{} x{}", .{ self.rd, self.rs1, self.rs2 });
+                try writer.print(" x{}, x{}, x{}", .{ self.rd, self.rs1, self.rs2 });
             },
             .I => {
-                try writer.print(" x{} x{} 0x{x}", .{ self.rd, self.rs1, self.imm });
+                try writer.print(" x{}, x{}, 0x{x}", .{ self.rd, self.rs1, self.imm });
             },
             .S => {
-                try writer.print(" x{} x{} 0x{x}", .{ self.rs1, self.rs2, self.imm });
+                try writer.print(" x{}, x{}, 0x{x}", .{ self.rs1, self.rs2, self.imm });
             },
             .B => {
-                try writer.print(" x{} x{} 0x{x}", .{ self.rs1, self.rs2, self.imm });
+                try writer.print(" x{}, x{}, 0x{x}", .{ self.rs1, self.rs2, self.imm });
             },
             .U => {
-                try writer.print(" x{}  0x{x}", .{ self.rd, self.imm });
+                try writer.print(" x{}, 0x{x}", .{ self.rd, self.imm });
             },
             .J => {
-                try writer.print(" x{}  0x{x}", .{ self.rd, self.imm });
+                try writer.print(" x{}, 0x{x}", .{ self.rd, self.imm });
             },
         }
     }
@@ -354,7 +385,7 @@ fn decode_j_imm(ins: u32) i32 {
         @intCast(i32, ins & 0b00000000000011111111000000000000) >> (12 - 12);
 }
 
-fn decode(comptime T: type, self: *T, ins: u32) T.ReturnType {
+fn decode(comptime T: type, self: *T, ins: u32) !T.ReturnType {
     switch (ins & MASK_OPCODE) {
         @enumToInt(RV32I_OPCODE.LUI) => {
             // U-Type
@@ -381,7 +412,7 @@ fn decode(comptime T: type, self: *T, ins: u32) T.ReturnType {
             const imm = decode_i_imm(ins);
             return switch (ins & MASK_FUNCT3) {
                 JALR_FUNCT3 << SHIFT_FUNCT3 => self.op_jalr(rd, rs1, imm),
-                else => @import("std").debug.panic("Invalid", .{}),
+                else => error.InvalidInstruction,
             };
         },
         @enumToInt(RV32I_OPCODE.BRANCH) => {
@@ -396,7 +427,10 @@ fn decode(comptime T: type, self: *T, ins: u32) T.ReturnType {
                 @enumToInt(BRANCH_FUNCT3.BGE) << SHIFT_FUNCT3 => self.op_bge(rs1, rs2, imm),
                 @enumToInt(BRANCH_FUNCT3.BLTU) << SHIFT_FUNCT3 => self.op_bltu(rs1, rs2, imm),
                 @enumToInt(BRANCH_FUNCT3.BGEU) << SHIFT_FUNCT3 => self.op_bgeu(rs1, rs2, imm),
-                else => @import("std").debug.panic("Invalid", .{}),
+                else => blk: {
+                    log_debug(@src(), "Invalid", .{});
+                    break :blk error.InvalidInstruction;
+                },
             };
         },
         @enumToInt(RV32I_OPCODE.LOAD) => {
@@ -410,7 +444,10 @@ fn decode(comptime T: type, self: *T, ins: u32) T.ReturnType {
                 @enumToInt(LOAD_FUNCT3.LW) << SHIFT_FUNCT3 => self.op_lw(rd, rs1, imm),
                 @enumToInt(LOAD_FUNCT3.LBU) << SHIFT_FUNCT3 => self.op_lbu(rd, rs1, imm),
                 @enumToInt(LOAD_FUNCT3.LHU) << SHIFT_FUNCT3 => self.op_lhu(rd, rs1, imm),
-                else => @import("std").debug.panic("Invalid", .{}),
+                else => blk: {
+                    log_debug(@src(), "Invalid", .{});
+                    break :blk error.InvalidInstruction;
+                },
             };
         },
         @enumToInt(RV32I_OPCODE.STORE) => {
@@ -422,7 +459,10 @@ fn decode(comptime T: type, self: *T, ins: u32) T.ReturnType {
                 @enumToInt(STORE_FUNCT3.SB) << SHIFT_FUNCT3 => self.op_sb(rs1, rs2, imm),
                 @enumToInt(STORE_FUNCT3.SH) << SHIFT_FUNCT3 => self.op_sh(rs1, rs2, imm),
                 @enumToInt(STORE_FUNCT3.SW) << SHIFT_FUNCT3 => self.op_sw(rs1, rs2, imm),
-                else => @import("std").debug.panic("Invalid", .{}),
+                else => blk: {
+                    log_debug(@src(), "Invalid", .{});
+                    break :blk error.InvalidInstruction;
+                },
             };
         },
         @enumToInt(RV32I_OPCODE.OPIMM) => {
@@ -460,23 +500,27 @@ fn decode(comptime T: type, self: *T, ins: u32) T.ReturnType {
                             const imm = decode_i_imm_lo(ins);
                             return self.op_slli(rd, rs1, imm);
                         },
-                        else => @import("std").debug.panic("Invalid", .{}),
+                        else => {
+                            log_debug(@src(), "Invalid", .{});
+                            return error.InvalidInstruction;
+                        },
                     }
                 },
                 @enumToInt(OPIMM_FUNCT3.SRI) => {
-                    switch (ins & MASK_IMM_HI) {
-                        @enumToInt(SRI_IMM_HI.SRLI) << SHIFT_IMM_HI => {
-                            const imm = decode_i_imm_lo(ins);
-                            return self.op_srli(rd, rs1, imm);
+                    const imm = decode_i_imm_lo(ins);
+                    return switch (ins & MASK_IMM_HI) {
+                        @enumToInt(SRI_IMM_HI.SRLI) << SHIFT_IMM_HI => self.op_srli(rd, rs1, imm),
+                        @enumToInt(SRI_IMM_HI.SRAI) << SHIFT_IMM_HI => self.op_srai(rd, rs1, imm),
+                        else => blk: {
+                            log_debug(@src(), "Invalid", .{});
+                            break :blk error.InvalidInstruction;
                         },
-                        @enumToInt(SRI_IMM_HI.SRAI) << SHIFT_IMM_HI => {
-                            const imm = decode_i_imm_lo(ins);
-                            return self.op_srai(rd, rs1, imm);
-                        },
-                        else => @import("std").debug.panic("Invalid", .{}),
-                    }
+                    };
                 },
-                else => @import("std").debug.panic("Invalid", .{}),
+                else => {
+                    log_debug(@src(), "Invalid", .{});
+                    return error.InvalidInstruction;
+                },
             }
         },
         @enumToInt(RV32I_OPCODE.OP) => {
@@ -489,7 +533,10 @@ fn decode(comptime T: type, self: *T, ins: u32) T.ReturnType {
                     return switch (ins & MASK_IMM_HI) {
                         @enumToInt(ADDSUB_IMM_HI.ADD) << SHIFT_IMM_HI => self.op_add(rd, rs1, rs2),
                         @enumToInt(ADDSUB_IMM_HI.SUB) << SHIFT_IMM_HI => self.op_sub(rd, rs1, rs2),
-                        else => @import("std").debug.panic("Invalid", .{}),
+                        else => blk: {
+                            log_debug(@src(), "Invalid", .{});
+                            break :blk error.InvalidInstruction;
+                        },
                     };
                 },
                 @enumToInt(OP_FUNCT3.SLL) << SHIFT_FUNCT3 => self.op_sll(rd, rs1, rs2),
@@ -500,12 +547,18 @@ fn decode(comptime T: type, self: *T, ins: u32) T.ReturnType {
                     return switch (ins & MASK_IMM_HI) {
                         @enumToInt(SR_IMM_HI.SRL) << SHIFT_IMM_HI => self.op_srl(rd, rs1, rs2),
                         @enumToInt(SR_IMM_HI.SRA) << SHIFT_IMM_HI => self.op_sra(rd, rs1, rs2),
-                        else => @import("std").debug.panic("Invalid", .{}),
+                        else => blk: {
+                            log_debug(@src(), "Invalid", .{});
+                            break :blk error.InvalidInstruction;
+                        },
                     };
                 },
                 @enumToInt(OP_FUNCT3.OR) << SHIFT_FUNCT3 => self.op_or(rd, rs1, rs2),
                 @enumToInt(OP_FUNCT3.AND) << SHIFT_FUNCT3 => self.op_and(rd, rs1, rs2),
-                else => @import("std").debug.panic("Invalid", .{}),
+                else => blk: {
+                    log_debug(@src(), "Invalid", .{});
+                    break :blk error.InvalidInstruction;
+                },
             };
         },
         @enumToInt(RV32I_OPCODE.MISC_MEM) => {
@@ -514,7 +567,10 @@ fn decode(comptime T: type, self: *T, ins: u32) T.ReturnType {
             const imm = decode_i_imm(ins);
             return switch (ins & MASK_FUNCT3) {
                 FENCE_FUNCT3 << SHIFT_FUNCT3 => self.op_fence(rd, rs1, imm),
-                else => @import("std").debug.panic("Invalid MISC_MEM FUNCT3 {b:0>3}", .{(ins & MASK_FUNCT3) >> SHIFT_FUNCT3}),
+                else => blk: {
+                    log_debug(@src(), "Invalid MISC_MEM FUNCT3 {b:0>3}", .{(ins & MASK_FUNCT3) >> SHIFT_FUNCT3});
+                    break :blk error.InvalidInstruction;
+                },
             };
         },
         @enumToInt(RV32I_OPCODE.SYSTEM) => {
@@ -532,10 +588,14 @@ fn decode(comptime T: type, self: *T, ins: u32) T.ReturnType {
                             @enumToInt(PRIV_FUNCT12.SRET) << SHIFT_FUNCT12 => self.op_sret(),
                             @enumToInt(PRIV_FUNCT12.MRET) << SHIFT_FUNCT12 => self.op_mret(),
                             @enumToInt(PRIV_FUNCT12.WFI) << SHIFT_FUNCT12 => self.op_wfi(),
-                            else => @import("std").debug.panic("Invalid SYSTEM PRIV FUNCT12={b:0>12}", .{(ins & MASK_FUNCT12) >> SHIFT_FUNCT12}),
+                            else => blk: {
+                                log_debug(@src(), "Invalid SYSTEM PRIV FUNCT12={b:0>12}", .{(ins & MASK_FUNCT12) >> SHIFT_FUNCT12});
+                                break :blk error.InvalidInstruction;
+                            },
                         };
                     } else {
-                        @import("std").debug.panic("Invalid SYSTEM PRIV rd={}, rs1={}", .{ rd, rs1 });
+                        log_debug(@src(), "Invalid SYSTEM PRIV rd={}, rs1={}", .{ rd, rs1 });
+                        return error.InvalidInstruction;
                     }
                 },
                 @enumToInt(SYSTEM_FUNCT3.CSRRW) << SHIFT_FUNCT3 => self.op_csrrw(rd, rs1, imm),
@@ -544,14 +604,19 @@ fn decode(comptime T: type, self: *T, ins: u32) T.ReturnType {
                 @enumToInt(SYSTEM_FUNCT3.CSRRWI) << SHIFT_FUNCT3 => self.op_csrrwi(rd, rs1, imm),
                 @enumToInt(SYSTEM_FUNCT3.CSRRSI) << SHIFT_FUNCT3 => self.op_csrrsi(rd, rs1, imm),
                 @enumToInt(SYSTEM_FUNCT3.CSRRCI) << SHIFT_FUNCT3 => self.op_csrrci(rd, rs1, imm),
-                else => @import("std").debug.panic("Invalid SYSTEM FUNCT3={b:0>3}", .{(ins & MASK_FUNCT3) >> SHIFT_FUNCT3}),
+                else => blk: {
+                    log_debug(@src(), "Invalid SYSTEM FUNCT3={b:0>3}", .{(ins & MASK_FUNCT3) >> SHIFT_FUNCT3});
+                    break :blk error.InvalidInstruction;
+                },
             };
         },
         else => {
-            @import("std").debug.panic("Invalid OPCODE={b:0>7}", .{ins & MASK_OPCODE});
+            log_debug(@src(), "Invalid OPCODE={b:0>7}", .{ins & MASK_OPCODE});
+            return error.InvalidInstruction;
         },
     }
-    @import("std").debug.panic("Unreachable", .{});
+    log_debug(@src(), "Unreachable", .{});
+    return error.InvalidInstruction;
 }
 
 const Decoder = struct {
@@ -675,55 +740,55 @@ const Decoder = struct {
     }
     fn op_bne(self: *Self, rs1: u8, rs2: u8, imm: i32) Instruction {
         _ = self;
-        return b_type(.BEQ, rs1, rs2, imm);
+        return b_type(.BNE, rs1, rs2, imm);
     }
     fn op_blt(self: *Self, rs1: u8, rs2: u8, imm: i32) Instruction {
         _ = self;
-        return b_type(.BEQ, rs1, rs2, imm);
+        return b_type(.BLT, rs1, rs2, imm);
     }
     fn op_bltu(self: *Self, rs1: u8, rs2: u8, imm: i32) Instruction {
         _ = self;
-        return b_type(.BEQ, rs1, rs2, imm);
+        return b_type(.BLTU, rs1, rs2, imm);
     }
     fn op_bge(self: *Self, rs1: u8, rs2: u8, imm: i32) Instruction {
         _ = self;
-        return b_type(.BEQ, rs1, rs2, imm);
+        return b_type(.BGE, rs1, rs2, imm);
     }
     fn op_bgeu(self: *Self, rs1: u8, rs2: u8, imm: i32) Instruction {
         _ = self;
-        return b_type(.BEQ, rs1, rs2, imm);
+        return b_type(.BGEU, rs1, rs2, imm);
     }
     fn op_lw(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
         _ = self;
-        return i_type(.BEQ, rd, rs1, imm);
+        return i_type(.LW, rd, rs1, imm);
     }
     fn op_lh(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
         _ = self;
-        return i_type(.BEQ, rd, rs1, imm);
+        return i_type(.LH, rd, rs1, imm);
     }
     fn op_lhu(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
         _ = self;
-        return i_type(.BEQ, rd, rs1, imm);
+        return i_type(.LHU, rd, rs1, imm);
     }
     fn op_lb(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
         _ = self;
-        return i_type(.BEQ, rd, rs1, imm);
+        return i_type(.LB, rd, rs1, imm);
     }
     fn op_lbu(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
         _ = self;
-        return i_type(.BEQ, rd, rs1, imm);
+        return i_type(.LBU, rd, rs1, imm);
     }
     fn op_sw(self: *Self, rs1: u8, rs2: u8, imm: i32) Instruction {
         _ = self;
-        return s_type(.BEQ, rs1, rs2, imm);
+        return s_type(.SW, rs1, rs2, imm);
     }
     fn op_sh(self: *Self, rs1: u8, rs2: u8, imm: i32) Instruction {
         _ = self;
-        return s_type(.BEQ, rs1, rs2, imm);
+        return s_type(.SH, rs1, rs2, imm);
     }
     fn op_sb(self: *Self, rs1: u8, rs2: u8, imm: i32) Instruction {
         _ = self;
-        return s_type(.BEQ, rs1, rs2, imm);
+        return s_type(.SB, rs1, rs2, imm);
     }
     fn op_ecall(self: *Self) Instruction {
         _ = self;
@@ -801,7 +866,7 @@ const Cpu = struct {
         return self;
     }
 
-    fn decode_ins(ins: u32) Instruction {
+    fn decode_ins(ins: u32) !Instruction {
         var decoder = Decoder{};
         return decode(Decoder, &decoder, ins);
     }
@@ -1065,9 +1130,13 @@ pub fn main() !void {
             break;
         }
         const word = std.mem.readInt(u32, &buf, .Little);
+        const ins_result = Cpu.decode_ins(word);
         std.debug.print("0b{b:0>32} ", .{word});
-        const ins = Cpu.decode_ins(word);
-        std.debug.print("{}\n", .{ins});
+        if (ins_result) |ins| {
+            std.debug.print("{}\n", .{ins});
+        } else |err| switch (err) {
+            error.InvalidInstruction => std.debug.print("Invalid\n", .{}),
+        }
     }
 }
 
