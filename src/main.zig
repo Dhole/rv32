@@ -16,6 +16,22 @@ const FormatType = enum {
     J,
 };
 
+const reg_abi = [32][]const u8{
+    "zero", // x0, Hard-wired zero
+    "ra", // x1, Return address
+    "sp", // x2, Stack pointer
+    "gp", // x3, Global pointer
+    "tp", // x4, Thread pointer
+    "t0", // x5, Temporary/alternate link register
+    "t1", "t2", // x6-7, Temporaries
+    "s0", // x8, Saved register/Frame pointer
+    "s1", // x9, Saved register
+    "a0", "a1", // x10-11, Function arguments/return values
+    "a2", "a3", "a4", "a5", "a6", "a7", // x12-17, Function arguments
+    "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", // x18-x27, Saved registers
+    "t3", "t4", "t5", "t6", // x28-x31, Temporaries
+};
+
 const Opcode = enum {
     const Self = @This();
 
@@ -147,13 +163,18 @@ const Opcode = enum {
 };
 
 const Instruction = struct {
-    const Self = @This();
-
     op: Opcode,
     rd: u8,
     rs1: u8,
     rs2: u8,
     imm: i32,
+};
+
+const InstructionFmt = struct {
+    const Self = @This();
+
+    addr: u32,
+    ins: Instruction,
 
     pub fn format(
         self: Self,
@@ -164,52 +185,67 @@ const Instruction = struct {
         _ = fmt;
         _ = options;
 
-        switch (self.op) {
+        const addr = self.addr;
+        const ins = self.ins;
+        const addr_imm = blk: {
+            @setRuntimeSafety(false);
+            break :blk @intCast(u32, @intCast(i32, addr) + ins.imm);
+        };
+        switch (ins.op) {
             .ADDI => {
-                if (self.rd == 0 and self.rs1 == 0 and self.imm == 0) {
+                if (ins.rd == 0 and ins.rs1 == 0 and ins.imm == 0) {
                     try writer.print("NOP", .{});
                     return;
-                } else if (self.rs1 == 0) {
-                    try writer.print("LI x{}, 0x{x}", .{ self.rd, self.imm });
+                } else if (ins.rs1 == 0) {
+                    try writer.print("LI {s}, {}", .{ reg_abi[ins.rd], ins.imm });
                     return;
                 }
             },
             .CSRRS => {
-                if (self.rs1 == 0) {
-                    try writer.print("CSRR x{}, 0x{x}", .{ self.rd, self.imm });
+                if (ins.rs1 == 0) {
+                    try writer.print("CSRR {s}, {}", .{ reg_abi[ins.rd], ins.imm });
                     return;
                 }
             },
             .JAL => {
-                if (self.rd == 0) {
-                    try writer.print("J 0x{x}", .{self.imm});
+                if (ins.rd == 0) {
+                    try writer.print("J 0x{x}", .{addr_imm});
+                    return;
+                }
+            },
+            .JALR => {
+                if (ins.rd == 0 and ins.imm == 0) {
+                    try writer.print("JR {s}", .{reg_abi[ins.rs1]});
                     return;
                 }
             },
             else => {},
         }
         try writer.print("{s}", .{
-            self.op.str(),
+            ins.op.str(),
         });
-        const format_type = self.op.format_type();
+        const format_type = ins.op.format_type();
         switch (format_type) {
             .R => {
-                try writer.print(" x{}, x{}, x{}", .{ self.rd, self.rs1, self.rs2 });
+                try writer.print(" {s}, {s}, {s}", .{ reg_abi[ins.rd], reg_abi[ins.rs1], reg_abi[ins.rs2] });
             },
             .I => {
-                try writer.print(" x{}, x{}, 0x{x}", .{ self.rd, self.rs1, self.imm });
+                try writer.print(" {s}, {s}, {}", .{ reg_abi[ins.rd], reg_abi[ins.rs1], ins.imm });
             },
             .S => {
-                try writer.print(" x{}, x{}, 0x{x}", .{ self.rs1, self.rs2, self.imm });
+                try writer.print(" {s}, {}({s})", .{ reg_abi[ins.rs2], ins.imm, reg_abi[ins.rs1] });
             },
             .B => {
-                try writer.print(" x{}, x{}, 0x{x}", .{ self.rs1, self.rs2, self.imm });
+                try writer.print(" {s}, {s}, 0x{x}", .{ reg_abi[ins.rs1], reg_abi[ins.rs2], addr_imm });
             },
             .U => {
-                try writer.print(" x{}, 0x{x}", .{ self.rd, self.imm });
+                try writer.print(" {s}, 0x{x}", .{ reg_abi[ins.rd], blk: {
+                    @setRuntimeSafety(false);
+                    break :blk @intCast(u32, ins.imm) >> 12;
+                } });
             },
             .J => {
-                try writer.print(" x{}, 0x{x}", .{ self.rd, self.imm });
+                try writer.print(" {s}, {}", .{ reg_abi[ins.rd], ins.imm });
             },
         }
     }
@@ -451,10 +487,10 @@ fn decode(comptime T: type, self: *T, ins: u32) !T.ReturnType {
             };
         },
         @enumToInt(RV32I_OPCODE.STORE) => {
-            // B-Type
+            // S-Type
             const rs1 = decode_rs1(ins);
             const rs2 = decode_rs2(ins);
-            const imm = decode_b_imm(ins);
+            const imm = decode_s_imm(ins);
             return switch (ins & MASK_FUNCT3) {
                 @enumToInt(STORE_FUNCT3.SB) << SHIFT_FUNCT3 => self.op_sb(rs1, rs2, imm),
                 @enumToInt(STORE_FUNCT3.SH) << SHIFT_FUNCT3 => self.op_sh(rs1, rs2, imm),
@@ -844,9 +880,50 @@ const Decoder = struct {
     }
 };
 
+const BasicMem = struct {
+    const Self = @This();
+
+    rom_offset: u32,
+    rom: []u8,
+    ram_offset: u32,
+    ram: []u8,
+
+    fn read_8(self: *Self, addr: u32) u8 {
+        if (self.rom_offset <= addr and addr < self.rom_offset + self.rom.len) {
+            return self.rom[addr - self.rom_offset];
+        }
+        log.panic("Invalid memory access at {x}", addr);
+    }
+    fn read_16(self: *Self, addr: u32) u16 {
+        const lo = self.read_8[addr];
+        const hi = self.read_8[addr + 1];
+        return @as(u16, lo) | (@as(u16, hi) << 8);
+    }
+    fn read_32(self: *Self, addr: u32) u32 {
+        const lo0 = self.read_8[addr];
+        const lo1 = self.read_8[addr + 1];
+        const hi0 = self.read_8[addr + 2];
+        const hi1 = self.read_8[addr + 3];
+        return @as(u32, lo0) | (@as(u32, lo1) << 8) | (@as(u32, hi0) << 16) | (@as(u32, hi1) << 24);
+    }
+    fn write_8(self: *Self, addr: u32, value: u8) void {
+        _ = self;
+        log.panic("Invalid memory write of {x} at {x}", value, addr);
+    }
+    fn write_16(self: *Self, addr: u32, value: u16) void {
+        _ = self;
+        log.panic("Invalid memory write of {x} at {x}", value, addr);
+    }
+    fn write_32(self: *Self, addr: u32, value: u32) void {
+        _ = self;
+        log.panic("Invalid memory write of {x} at {x}", value, addr);
+    }
+};
+
 const Cpu = struct {
     const Self = @This();
     const ReturnType = void;
+    const MemType = type;
 
     // Registers from x0-x31.
     // 'zero' is an alias to x0 and it is hardwired to the value '0'.
@@ -857,11 +934,13 @@ const Cpu = struct {
     x: [32]u32,
     // Program counter
     pc: u32,
+    mem: MemType,
 
-    pub fn init() Self {
+    pub fn init(mem: MemType) Self {
         var self = Self{
             .x = [_]u32{0} ** 32,
             .pc = 0,
+            .mem = mem,
         };
         return self;
     }
@@ -875,35 +954,9 @@ const Cpu = struct {
         return decode(Self, self, ins);
     }
 
-    fn mem_read_8(self: *Self, addr: u32) u8 {
-        _ = self;
-        _ = addr;
-        return 0;
-    }
-    fn mem_read_16(self: *Self, addr: u32) u16 {
-        _ = self;
-        _ = addr;
-        return 0;
-    }
-    fn mem_read_32(self: *Self, addr: u32) u32 {
-        _ = self;
-        _ = addr;
-        return 0;
-    }
-    fn mem_write_8(self: *Self, addr: u32, value: u8) void {
-        _ = self;
-        _ = addr;
-        _ = value;
-    }
-    fn mem_write_16(self: *Self, addr: u32, value: u16) void {
-        _ = self;
-        _ = addr;
-        _ = value;
-    }
-    fn mem_write_32(self: *Self, addr: u32, value: u32) void {
-        _ = self;
-        _ = addr;
-        _ = value;
+    fn step(self: *Self) void {
+        const word = self.mem.read_32(self.pc);
+        return decode(Self, self, word);
     }
 
     fn op_addi(self: *Self, rd: u8, rs1: u8, imm: i32) void {
@@ -1076,37 +1129,72 @@ const Cpu = struct {
 
     fn op_lw(self: *Self, rd: u8, rs1: u8, imm: i32) void {
         @setRuntimeSafety(false);
-        self.x[rd] = self.mem_read_32(@intCast(u32, @intCast(i32, self.x[rs1]) + imm));
+        self.x[rd] = self.mem.read_32(@intCast(u32, @intCast(i32, self.x[rs1]) + imm));
     }
     fn op_lh(self: *Self, rd: u8, rs1: u8, imm: i32) void {
         @setRuntimeSafety(false);
-        self.x[rd] = @intCast(u32, @intCast(i32, @intCast(i16, self.mem_read_16(@intCast(u32, @intCast(i32, self.x[rs1]) + imm)))));
+        self.x[rd] = @intCast(u32, @intCast(i32, @intCast(i16, self.mem.read_16(@intCast(u32, @intCast(i32, self.x[rs1]) + imm)))));
     }
     fn op_lhu(self: *Self, rd: u8, rs1: u8, imm: i32) void {
         @setRuntimeSafety(false);
-        self.x[rd] = @intCast(u32, self.mem_read_16(@intCast(u32, @intCast(i32, self.x[rs1]) + imm)));
+        self.x[rd] = @intCast(u32, self.mem.read_16(@intCast(u32, @intCast(i32, self.x[rs1]) + imm)));
     }
     fn op_lb(self: *Self, rd: u8, rs1: u8, imm: i32) void {
         @setRuntimeSafety(false);
-        self.x[rd] = @intCast(u32, @intCast(i32, @intCast(i8, self.mem_read_8(@intCast(u32, @intCast(i32, self.x[rs1]) + imm)))));
+        self.x[rd] = @intCast(u32, @intCast(i32, @intCast(i8, self.mem.read_8(@intCast(u32, @intCast(i32, self.x[rs1]) + imm)))));
     }
     fn op_lbu(self: *Self, rd: u8, rs1: u8, imm: i32) void {
         @setRuntimeSafety(false);
-        self.x[rd] = @intCast(u32, self.mem_read_8(@intCast(u32, @intCast(i32, self.x[rs1]) + imm)));
+        self.x[rd] = @intCast(u32, self.mem.read_8(@intCast(u32, @intCast(i32, self.x[rs1]) + imm)));
     }
 
     fn op_sw(self: *Self, rs1: u8, rs2: u8, imm: i32) void {
-        self.mem_write_32(@intCast(u32, @intCast(i32, self.x[rs1]) + imm), self.x[rs2]);
+        self.mem.write_32(@intCast(u32, @intCast(i32, self.x[rs1]) + imm), self.x[rs2]);
     }
     fn op_sh(self: *Self, rs1: u8, rs2: u8, imm: i32) void {
-        self.mem_write_16(@intCast(u32, @intCast(i32, self.x[rs1]) + imm), @intCast(u16, self.x[rs2] & 0x0000ffff));
+        self.mem.write_16(@intCast(u32, @intCast(i32, self.x[rs1]) + imm), @intCast(u16, self.x[rs2] & 0x0000ffff));
     }
     fn op_sb(self: *Self, rs1: u8, rs2: u8, imm: i32) void {
-        self.mem_write_8(@intCast(u32, @intCast(i32, self.x[rs1]) + imm), @intCast(u8, self.x[rs2] & 0x000000ff));
+        self.mem.write_8(@intCast(u32, @intCast(i32, self.x[rs1]) + imm), @intCast(u8, self.x[rs2] & 0x000000ff));
     }
 
     // TODO: op_fence
 };
+
+pub fn example_disassemble() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    std.debug.print("Arguments: {s}\n", .{args});
+
+    const addr_str = args[1];
+    const rom_path = args[2];
+    var addr = try std.fmt.parseUnsigned(u32, addr_str, 0);
+    var rom_file = try std.fs.cwd().openFile(rom_path, .{ .mode = .read_only });
+    defer rom_file.close();
+
+    var buf: [4]u8 = undefined;
+    try rom_file.seekTo(0);
+    while (true) {
+        const read = try rom_file.read(&buf);
+        if (read != buf.len) {
+            break;
+        }
+        const word = std.mem.readInt(u32, &buf, .Little);
+        const ins_result = Cpu.decode_ins(word);
+        std.debug.print("{x:0>8}:  {x:0>8}  ", .{ addr, word });
+        if (ins_result) |ins| {
+            std.debug.print("{}\n", .{InstructionFmt{ .addr = addr, .ins = ins }});
+        } else |err| switch (err) {
+            error.InvalidInstruction => std.debug.print("Invalid\n", .{}),
+        }
+        addr += 4;
+    }
+}
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -1122,21 +1210,20 @@ pub fn main() !void {
     var rom_file = try std.fs.cwd().openFile(rom_path, .{ .mode = .read_only });
     defer rom_file.close();
 
-    var buf: [4]u8 = undefined;
     try rom_file.seekTo(0);
-    while (true) {
-        const read = try rom_file.read(&buf);
-        if (read != buf.len) {
-            break;
-        }
-        const word = std.mem.readInt(u32, &buf, .Little);
-        const ins_result = Cpu.decode_ins(word);
-        std.debug.print("0b{b:0>32} ", .{word});
-        if (ins_result) |ins| {
-            std.debug.print("{}\n", .{ins});
-        } else |err| switch (err) {
-            error.InvalidInstruction => std.debug.print("Invalid\n", .{}),
-        }
+    const rom = try rom_file.readToEndAlloc(allocator, 0x8000);
+    defer allocator.free(rom);
+    var mem = BasicMem{
+        .rom_offset = 0x80000000,
+        .rom = rom,
+        .ram_offset = 0x0,
+        .ram = &[_]u8{},
+    };
+    var cpu = Cpu.init(mem);
+    cpu.pc = 0x80000000;
+    var i = 0;
+    while (i < 0x100) : (i += 1) {
+        cpu.step();
     }
 }
 
@@ -1146,43 +1233,46 @@ test "decode imm" {
     @setRuntimeSafety(false);
     var v: u32 = undefined;
     v = 0b00000000000000000000011111111111;
-    try expectEqual(@intCast(i32, v), Cpu.decode_i_imm(0b01111111111100000000000000000000));
+    try expectEqual(@intCast(i32, v), decode_i_imm(0b01111111111100000000000000000000));
     v = 0b11111111111111111111111111111111;
-    try expectEqual(@intCast(i32, v), Cpu.decode_i_imm(0b11111111111100000000000000000000));
+    try expectEqual(@intCast(i32, v), decode_i_imm(0b11111111111100000000000000000000));
 
     v = 0b00000000000000000000011111111111;
-    try expectEqual(@intCast(i32, v), Cpu.decode_s_imm(0b01111110000000000000111110000000));
+    try expectEqual(@intCast(i32, v), decode_s_imm(0b01111110000000000000111110000000));
     v = 0b00000000000000000000011111011111;
-    try expectEqual(@intCast(i32, v), Cpu.decode_s_imm(0b01111100000000000000111110000000));
+    try expectEqual(@intCast(i32, v), decode_s_imm(0b01111100000000000000111110000000));
     v = 0b11111111111111111111111111111111;
-    try expectEqual(@intCast(i32, v), Cpu.decode_s_imm(0b11111110000000000000111110000000));
+    try expectEqual(@intCast(i32, v), decode_s_imm(0b11111110000000000000111110000000));
+    var x: i32 = -60;
+    v = @intCast(u32, x);
+    try expectEqual(@intCast(i32, v), decode_s_imm(0b11111100001111110010001000100011));
 
     v = 0b11111111111111111111000000000000;
-    try expectEqual(@intCast(i32, v), Cpu.decode_u_imm(0b11111111111111111111000000000000));
+    try expectEqual(@intCast(i32, v), decode_u_imm(0b11111111111111111111000000000000));
     v = 0b01111111111111111111000000000000;
-    try expectEqual(@intCast(i32, v), Cpu.decode_u_imm(0b01111111111111111111000000000000));
+    try expectEqual(@intCast(i32, v), decode_u_imm(0b01111111111111111111000000000000));
 
     v = 0b11111111111111111111111111111110;
-    try expectEqual(@intCast(i32, v), Cpu.decode_b_imm(0b11111110000000000000111110000000));
+    try expectEqual(@intCast(i32, v), decode_b_imm(0b11111110000000000000111110000000));
     v = 0b00000000000000000000111111111110;
-    try expectEqual(@intCast(i32, v), Cpu.decode_b_imm(0b01111110000000000000111110000000));
+    try expectEqual(@intCast(i32, v), decode_b_imm(0b01111110000000000000111110000000));
     v = 0b00000000000000000000011111111110;
-    try expectEqual(@intCast(i32, v), Cpu.decode_b_imm(0b01111110000000000000111100000000));
+    try expectEqual(@intCast(i32, v), decode_b_imm(0b01111110000000000000111100000000));
     v = 0b00000000000000000000011111111100;
-    try expectEqual(@intCast(i32, v), Cpu.decode_b_imm(0b01111110000000000000111000000000));
+    try expectEqual(@intCast(i32, v), decode_b_imm(0b01111110000000000000111000000000));
     v = 0b00000000000000000000011111011100;
-    try expectEqual(@intCast(i32, v), Cpu.decode_b_imm(0b01111100000000000000111000000000));
+    try expectEqual(@intCast(i32, v), decode_b_imm(0b01111100000000000000111000000000));
 
     v = 0b11111111111111111111111111111110;
-    try expectEqual(@intCast(i32, v), Cpu.decode_j_imm(0b11111111111111111111000000000000));
+    try expectEqual(@intCast(i32, v), decode_j_imm(0b11111111111111111111000000000000));
     v = 0b00000000000011111111111111111110;
-    try expectEqual(@intCast(i32, v), Cpu.decode_j_imm(0b01111111111111111111000000000000));
+    try expectEqual(@intCast(i32, v), decode_j_imm(0b01111111111111111111000000000000));
     v = 0b00000000000001111111111111111110;
-    try expectEqual(@intCast(i32, v), Cpu.decode_j_imm(0b01111111111101111111000000000000));
+    try expectEqual(@intCast(i32, v), decode_j_imm(0b01111111111101111111000000000000));
     v = 0b00000000000001111111011111111110;
-    try expectEqual(@intCast(i32, v), Cpu.decode_j_imm(0b01111111111001111111000000000000));
+    try expectEqual(@intCast(i32, v), decode_j_imm(0b01111111111001111111000000000000));
     v = 0b00000000000001111111011111111100;
-    try expectEqual(@intCast(i32, v), Cpu.decode_j_imm(0b01111111110001111111000000000000));
+    try expectEqual(@intCast(i32, v), decode_j_imm(0b01111111110001111111000000000000));
 }
 
 test "instructions" {
