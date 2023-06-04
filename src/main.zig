@@ -91,17 +91,21 @@ const Opcode = enum {
     MRET,
     WFI,
 
+    // Pseudoinstructions
+    NOP,
+    J,
+
     fn format_type(self: Self) FormatType {
         return switch (self) {
             .LUI, .AUIPC => FormatType.U,
-            .JAL => FormatType.J,
+            .JAL, .J => FormatType.J,
             .JALR => FormatType.I,
             .BEQ, .BNE, .BLT, .BGE, .BLTU, .BGEU => FormatType.B,
             .LB, .LH, .LW, .LBU, .LHU => FormatType.I,
             .SB, .SH, .SW => FormatType.S,
             .ADDI, .SLTI, .SLTIU, .XORI, .ORI, .ANDI => FormatType.I,
             .SLLI, .SRLI, .SRAI => FormatType.I,
-            .ADD, .SUB, .SLL, .SLT, .SLTU, .XOR, .SRL, .SRA, .OR, .AND => FormatType.R,
+            .ADD, .SUB, .SLL, .SLT, .SLTU, .XOR, .SRL, .SRA, .OR, .AND, .NOP => FormatType.R,
             .FENCE, .ECALL, .EBREAK, .CSRRW, .CSRRS, .CSRRC, .CSRRWI, .CSRRSI, .CSRRCI, .URET, .SRET, .MRET, .WFI => FormatType.I,
         };
     }
@@ -158,6 +162,8 @@ const Opcode = enum {
             .SRET => "SRET",
             .MRET => "MRET",
             .WFI => "WFI",
+            .NOP => "NOP",
+            .J => "J",
         };
     }
 };
@@ -191,7 +197,15 @@ const InstructionFmt = struct {
             @setRuntimeSafety(false);
             break :blk @intCast(u32, @intCast(i32, addr) + ins.imm);
         };
+        const imm_u32 = blk: {
+            @setRuntimeSafety(false);
+            break :blk @intCast(u32, ins.imm);
+        };
         switch (ins.op) {
+            .NOP => {
+                try writer.print("NOP", .{});
+                return;
+            },
             .ADDI => {
                 if (ins.rd == 0 and ins.rs1 == 0 and ins.imm == 0) {
                     try writer.print("NOP", .{});
@@ -203,15 +217,25 @@ const InstructionFmt = struct {
             },
             .CSRRS => {
                 if (ins.rs1 == 0) {
-                    try writer.print("CSRR {s}, {}", .{ reg_abi[ins.rd], ins.imm });
+                    try writer.print("CSRR {s}, 0x{x:0>2}", .{ reg_abi[ins.rd], imm_u32 });
                     return;
                 }
             },
-            .JAL => {
+            .CSRRW => {
                 if (ins.rd == 0) {
-                    try writer.print("J 0x{x}", .{addr_imm});
+                    try writer.print("CSRW 0x{x:0>2}, {s}", .{ imm_u32, reg_abi[ins.rs1] });
                     return;
                 }
+            },
+            .CSRRWI => {
+                if (ins.rd == 0) {
+                    try writer.print("CSRWI 0x{x:0>2}, {}", .{ imm_u32, ins.rs1 });
+                    return;
+                }
+            },
+            .J => {
+                try writer.print("J 0x{x}", .{addr_imm});
+                return;
             },
             .JALR => {
                 if (ins.rd == 0 and ins.imm == 0) {
@@ -427,18 +451,27 @@ fn decode(comptime T: type, self: *T, ins: u32) !T.ReturnType {
             // U-Type
             const rd = decode_rd(ins);
             const imm = decode_u_imm(ins);
+            if (rd == 0) {
+                return self.op_nop();
+            }
             return self.op_lui(rd, imm);
         },
         @enumToInt(RV32I_OPCODE.AUIPC) => {
             // U-Type
             const rd = decode_rd(ins);
             const imm = decode_u_imm(ins);
+            if (rd == 0) {
+                return self.op_nop();
+            }
             return self.op_auipc(rd, imm);
         },
         @enumToInt(RV32I_OPCODE.JAL) => {
             // J-Type
             const rd = decode_rd(ins);
             const imm = decode_j_imm(ins);
+            if (rd == 0) {
+                return self.op_j(imm);
+            }
             return self.op_jal(rd, imm);
         },
         @enumToInt(RV32I_OPCODE.JALR) => {
@@ -446,6 +479,8 @@ fn decode(comptime T: type, self: *T, ins: u32) !T.ReturnType {
             const rd = decode_rd(ins);
             const rs1 = decode_rs1(ins);
             const imm = decode_i_imm(ins);
+            // if rd == 0 and imm == 0 then JR
+            // if rd == 0 then JAR // No link
             return switch (ins & MASK_FUNCT3) {
                 JALR_FUNCT3 << SHIFT_FUNCT3 => self.op_jalr(rd, rs1, imm),
                 else => error.InvalidInstruction,
@@ -474,6 +509,9 @@ fn decode(comptime T: type, self: *T, ins: u32) !T.ReturnType {
             const rd = decode_rd(ins);
             const rs1 = decode_rs1(ins);
             const imm = decode_i_imm(ins);
+            if (rd == 0) {
+                return self.op_nop();
+            }
             return switch (ins & MASK_FUNCT3) {
                 @enumToInt(LOAD_FUNCT3.LB) << SHIFT_FUNCT3 => self.op_lb(rd, rs1, imm),
                 @enumToInt(LOAD_FUNCT3.LH) << SHIFT_FUNCT3 => self.op_lh(rd, rs1, imm),
@@ -505,6 +543,9 @@ fn decode(comptime T: type, self: *T, ins: u32) !T.ReturnType {
             // I-Type
             const rd = decode_rd(ins);
             const rs1 = decode_rs1(ins);
+            if (rd == 0) {
+                return self.op_nop();
+            }
             switch (ins & MASK_FUNCT3) {
                 @enumToInt(OPIMM_FUNCT3.ADDI) << SHIFT_FUNCT3 => {
                     const imm = decode_i_imm(ins);
@@ -564,6 +605,9 @@ fn decode(comptime T: type, self: *T, ins: u32) !T.ReturnType {
             const rd = decode_rd(ins);
             const rs1 = decode_rs1(ins);
             const rs2 = decode_rs2(ins);
+            if (rd == 0) {
+                return self.op_nop();
+            }
             return switch (ins & MASK_FUNCT3) {
                 @enumToInt(OP_FUNCT3.ADDSUB) << SHIFT_FUNCT3 => {
                     return switch (ins & MASK_IMM_HI) {
@@ -634,12 +678,12 @@ fn decode(comptime T: type, self: *T, ins: u32) !T.ReturnType {
                         return error.InvalidInstruction;
                     }
                 },
-                @enumToInt(SYSTEM_FUNCT3.CSRRW) << SHIFT_FUNCT3 => self.op_csrrw(rd, rs1, imm),
-                @enumToInt(SYSTEM_FUNCT3.CSRRS) << SHIFT_FUNCT3 => self.op_csrrs(rd, rs1, imm),
-                @enumToInt(SYSTEM_FUNCT3.CSRRC) << SHIFT_FUNCT3 => self.op_csrrc(rd, rs1, imm),
-                @enumToInt(SYSTEM_FUNCT3.CSRRWI) << SHIFT_FUNCT3 => self.op_csrrwi(rd, rs1, imm),
-                @enumToInt(SYSTEM_FUNCT3.CSRRSI) << SHIFT_FUNCT3 => self.op_csrrsi(rd, rs1, imm),
-                @enumToInt(SYSTEM_FUNCT3.CSRRCI) << SHIFT_FUNCT3 => self.op_csrrci(rd, rs1, imm),
+                @enumToInt(SYSTEM_FUNCT3.CSRRW) << SHIFT_FUNCT3 => self.op_csrrw(rd, rs1, imm & 0b111111111111),
+                @enumToInt(SYSTEM_FUNCT3.CSRRS) << SHIFT_FUNCT3 => self.op_csrrs(rd, rs1, imm & 0b111111111111),
+                @enumToInt(SYSTEM_FUNCT3.CSRRC) << SHIFT_FUNCT3 => self.op_csrrc(rd, rs1, imm & 0b111111111111),
+                @enumToInt(SYSTEM_FUNCT3.CSRRWI) << SHIFT_FUNCT3 => self.op_csrrwi(rd, rs1, imm & 0b111111111111),
+                @enumToInt(SYSTEM_FUNCT3.CSRRSI) << SHIFT_FUNCT3 => self.op_csrrsi(rd, rs1, imm & 0b111111111111),
+                @enumToInt(SYSTEM_FUNCT3.CSRRCI) << SHIFT_FUNCT3 => self.op_csrrci(rd, rs1, imm & 0b111111111111),
                 else => blk: {
                     log_debug(@src(), "Invalid SYSTEM FUNCT3={b:0>3}", .{(ins & MASK_FUNCT3) >> SHIFT_FUNCT3});
                     break :blk error.InvalidInstruction;
@@ -766,6 +810,10 @@ const Decoder = struct {
         _ = self;
         return j_type(.JAL, rd, imm);
     }
+    fn op_j(self: *Self, imm: i32) Instruction {
+        _ = self;
+        return j_type(.J, 0, imm);
+    }
     fn op_jalr(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
         _ = self;
         return i_type(.JALR, rd, rs1, imm);
@@ -878,7 +926,16 @@ const Decoder = struct {
         _ = self;
         return Instruction{ .op = .WFI, .rd = 0, .rs1 = 0, .rs2 = 0, .imm = 0 };
     }
+    fn op_nop(self: *Self) Instruction {
+        _ = self;
+        return Instruction{ .op = .NOP, .rd = 0, .rs1 = 0, .rs2 = 0, .imm = 0 };
+    }
 };
+
+fn decode_ins(ins: u32) !Instruction {
+    var decoder = Decoder{};
+    return decode(Decoder, &decoder, ins);
+}
 
 const BasicMem = struct {
     const Self = @This();
@@ -892,274 +949,364 @@ const BasicMem = struct {
         if (self.rom_offset <= addr and addr < self.rom_offset + self.rom.len) {
             return self.rom[addr - self.rom_offset];
         }
-        log.panic("Invalid memory access at {x}", addr);
+        debug.panic("Invalid memory access at {x}", .{addr});
     }
     fn read_16(self: *Self, addr: u32) u16 {
-        const lo = self.read_8[addr];
-        const hi = self.read_8[addr + 1];
+        const lo = self.read_8(addr);
+        const hi = self.read_8(addr + 1);
         return @as(u16, lo) | (@as(u16, hi) << 8);
     }
     fn read_32(self: *Self, addr: u32) u32 {
-        const lo0 = self.read_8[addr];
-        const lo1 = self.read_8[addr + 1];
-        const hi0 = self.read_8[addr + 2];
-        const hi1 = self.read_8[addr + 3];
+        const lo0 = self.read_8(addr);
+        const lo1 = self.read_8(addr + 1);
+        const hi0 = self.read_8(addr + 2);
+        const hi1 = self.read_8(addr + 3);
         return @as(u32, lo0) | (@as(u32, lo1) << 8) | (@as(u32, hi0) << 16) | (@as(u32, hi1) << 24);
     }
     fn write_8(self: *Self, addr: u32, value: u8) void {
         _ = self;
-        log.panic("Invalid memory write of {x} at {x}", value, addr);
+        debug.panic("Invalid memory write of {x} at {x}", .{ value, addr });
     }
     fn write_16(self: *Self, addr: u32, value: u16) void {
         _ = self;
-        log.panic("Invalid memory write of {x} at {x}", value, addr);
+        debug.panic("Invalid memory write of {x} at {x}", .{ value, addr });
     }
     fn write_32(self: *Self, addr: u32, value: u32) void {
         _ = self;
-        log.panic("Invalid memory write of {x} at {x}", value, addr);
+        debug.panic("Invalid memory write of {x} at {x}", .{ value, addr });
     }
 };
 
-const Cpu = struct {
-    const Self = @This();
-    const ReturnType = void;
-    const MemType = type;
+const CSR_MEPC: u32 = 0x341;
 
-    // Registers from x0-x31.
-    // 'zero' is an alias to x0 and it is hardwired to the value '0'.
-    // Standard calling conventions:
-    // - x1: return address for a call
-    // - x2: stack pointer
-    // - x5: alternative link register
-    x: [32]u32,
-    // Program counter
-    pc: u32,
-    mem: MemType,
+pub fn Cpu(comptime MemType: type) type {
+    return struct {
+        const Self = @This();
+        const ReturnType = void;
 
-    pub fn init(mem: MemType) Self {
-        var self = Self{
-            .x = [_]u32{0} ** 32,
-            .pc = 0,
-            .mem = mem,
-        };
-        return self;
-    }
+        // Registers from x0-x31.
+        // 'zero' is an alias to x0 and it is hardwired to the value '0'.
+        // Standard calling conventions:
+        // - x1: return address for a call
+        // - x2: stack pointer
+        // - x5: alternative link register
+        x: [32]u32,
+        // Program counter
+        pc: u32,
+        csr: [4096]u32,
+        mem: MemType,
 
-    fn decode_ins(ins: u32) !Instruction {
-        var decoder = Decoder{};
-        return decode(Decoder, &decoder, ins);
-    }
+        pub fn init(mem: MemType) Self {
+            var self = Self{
+                .x = [_]u32{0} ** 32,
+                .pc = 0,
+                .csr = [_]u32{0} ** 4096,
+                .mem = mem,
+            };
+            return self;
+        }
 
-    fn decode_exec(self: *Self, ins: u32) void {
-        return decode(Self, self, ins);
-    }
+        fn decode_exec(self: *Self, ins: u32) void {
+            return decode(Self, self, ins);
+        }
 
-    fn step(self: *Self) void {
-        const word = self.mem.read_32(self.pc);
-        return decode(Self, self, word);
-    }
+        fn step(self: *Self) !void {
+            const word = self.mem.read_32(self.pc);
+            return decode(Self, self, word);
+        }
 
-    fn op_addi(self: *Self, rd: u8, rs1: u8, imm: i32) void {
-        @setRuntimeSafety(false);
-        self.x[rd] = self.x[rs1] + @intCast(u32, imm);
-        self.pc += 4;
-    }
-
-    fn op_slti(self: *Self, rd: u8, rs1: u8, imm: i32) void {
-        @setRuntimeSafety(false);
-        self.x[rd] = if (@intCast(i32, self.x[rs1]) < imm) 1 else 0;
-        self.pc += 4;
-    }
-    fn op_sltiu(self: *Self, rd: u8, rs1: u8, imm: i32) void {
-        @setRuntimeSafety(false);
-        self.x[rd] = if (self.x[rs1] < @intCast(u32, imm)) 1 else 0;
-        self.pc += 4;
-    }
-
-    fn op_andi(self: *Self, rd: u8, rs1: u8, imm: i32) void {
-        @setRuntimeSafety(false);
-        self.x[rd] = self.x[rs1] & @intCast(u32, imm);
-        self.pc += 4;
-    }
-    fn op_ori(self: *Self, rd: u8, rs1: u8, imm: i32) void {
-        @setRuntimeSafety(false);
-        self.x[rd] = self.x[rs1] | @intCast(u32, imm);
-        self.pc += 4;
-    }
-    fn op_xori(self: *Self, rd: u8, rs1: u8, imm: i32) void {
-        @setRuntimeSafety(false);
-        self.x[rd] = self.x[rs1] ^ @intCast(u32, imm);
-        self.pc += 4;
-    }
-
-    fn op_slli(self: *Self, rd: u8, rs1: u8, shamt: u8) void {
-        self.x[rd] = self.x[rs1] << @intCast(u5, shamt);
-        self.pc += 4;
-    }
-    fn op_srli(self: *Self, rd: u8, rs1: u8, shamt: u8) void {
-        self.x[rd] = self.x[rs1] >> @intCast(u5, shamt);
-        self.pc += 4;
-    }
-    fn op_srai(self: *Self, rd: u8, rs1: u8, shamt: u8) void {
-        @setRuntimeSafety(false);
-        self.x[rd] = @intCast(u32, @intCast(i32, self.x[rs1]) >> @intCast(u5, shamt));
-        self.pc += 4;
-    }
-
-    fn op_lui(self: *Self, rd: u8, imm: i32) void {
-        @setRuntimeSafety(false);
-        self.x[rd] = @intCast(u32, imm);
-        self.pc += 4;
-    }
-    fn op_auipc(self: *Self, rd: u8, imm: i32) void {
-        @setRuntimeSafety(false);
-        self.x[rd] = @intCast(u32, @intCast(i32, self.pc) + imm);
-        self.pc += 4;
-    }
-
-    fn op_add(self: *Self, rd: u8, rs1: u8, rs2: u8) void {
-        @setRuntimeSafety(false);
-        self.x[rd] = self.x[rs1] + self.x[rs2];
-        self.pc += 4;
-    }
-    fn op_sub(self: *Self, rd: u8, rs1: u8, rs2: u8) void {
-        @setRuntimeSafety(false);
-        self.x[rd] = self.x[rs1] - self.x[rs2];
-        self.pc += 4;
-    }
-    fn op_slt(self: *Self, rd: u8, rs1: u8, rs2: u8) void {
-        @setRuntimeSafety(false);
-        self.x[rd] = if (@intCast(i32, self.x[rs1]) < @intCast(i32, self.x[rs2])) 1 else 0;
-        self.pc += 4;
-    }
-    fn op_sltu(self: *Self, rd: u8, rs1: u8, rs2: u8) void {
-        @setRuntimeSafety(false);
-        self.x[rd] = if (self.x[rs1] < self.x[rs2]) 1 else 0;
-        self.pc += 4;
-    }
-    fn op_and(self: *Self, rd: u8, rs1: u8, rs2: u8) void {
-        @setRuntimeSafety(false);
-        self.x[rd] = self.x[rs1] & self.x[rs2];
-        self.pc += 4;
-    }
-    fn op_or(self: *Self, rd: u8, rs1: u8, rs2: u8) void {
-        @setRuntimeSafety(false);
-        self.x[rd] = self.x[rs1] | self.x[rs2];
-        self.pc += 4;
-    }
-    fn op_xor(self: *Self, rd: u8, rs1: u8, rs2: u8) void {
-        @setRuntimeSafety(false);
-        self.x[rd] = self.x[rs1] ^ self.x[rs2];
-        self.pc += 4;
-    }
-
-    fn op_sll(self: *Self, rd: u8, rs1: u8, rs2: u8) void {
-        self.x[rd] = self.x[rs1] << @intCast(u5, self.x[rs2] & 0b11111);
-        self.pc += 4;
-    }
-    fn op_srl(self: *Self, rd: u8, rs1: u8, rs2: u8) void {
-        self.x[rd] = self.x[rs1] >> @intCast(u5, self.x[rs2] & 0b11111);
-        self.pc += 4;
-    }
-    fn op_sra(self: *Self, rd: u8, rs1: u8, rs2: u8) void {
-        @setRuntimeSafety(false);
-        self.x[rd] = @intCast(u32, @intCast(i32, self.x[rs1]) >> @intCast(u5, self.x[rs2] & 0b11111));
-        self.pc += 4;
-    }
-
-    fn op_jal(self: *Self, rd: u8, imm: i32) void {
-        @setRuntimeSafety(false);
-        self.x[rd] = self.pc + 4;
-        self.pc = @intCast(u32, @intCast(i32, self.pc) + imm);
-    }
-    fn op_jalr(self: *Self, rd: u8, rs1: u8, imm: i32) void {
-        @setRuntimeSafety(false);
-        self.x[rd] = self.pc + 4;
-        self.pc = @intCast(u32, @intCast(i32, self.x[rs1]) + imm) & 0b11111111111111111111111111111110;
-    }
-
-    fn op_beq(self: *Self, rs1: u8, rs2: u8, imm: i32) void {
-        @setRuntimeSafety(false);
-        if (self.x[rs1] == self.x[rs2]) {
-            self.pc = @intCast(u32, @intCast(i32, self.pc) + imm);
-        } else {
+        fn op_addi(self: *Self, rd: u8, rs1: u8, imm: i32) void {
+            @setRuntimeSafety(false);
+            self.x[rd] = self.x[rs1] + @intCast(u32, imm);
             self.pc += 4;
         }
-    }
-    fn op_bne(self: *Self, rs1: u8, rs2: u8, imm: i32) void {
-        @setRuntimeSafety(false);
-        if (self.x[rs1] != self.x[rs2]) {
-            self.pc = @intCast(u32, @intCast(i32, self.pc) + imm);
-        } else {
-            self.pc += 4;
-        }
-    }
-    fn op_blt(self: *Self, rs1: u8, rs2: u8, imm: i32) void {
-        @setRuntimeSafety(false);
-        if (@intCast(i32, self.x[rs1]) < @intCast(i32, self.x[rs2])) {
-            self.pc = @intCast(u32, @intCast(i32, self.pc) + imm);
-        } else {
-            self.pc += 4;
-        }
-    }
-    fn op_bltu(self: *Self, rs1: u8, rs2: u8, imm: i32) void {
-        @setRuntimeSafety(false);
-        if (self.x[rs1] < self.x[rs2]) {
-            self.pc = @intCast(u32, @intCast(i32, self.pc) + imm);
-        } else {
-            self.pc += 4;
-        }
-    }
-    fn op_bge(self: *Self, rs1: u8, rs2: u8, imm: i32) void {
-        @setRuntimeSafety(false);
-        if (@intCast(i32, self.x[rs1]) >= @intCast(i32, self.x[rs2])) {
-            self.pc = @intCast(u32, @intCast(i32, self.pc) + imm);
-        } else {
-            self.pc += 4;
-        }
-    }
-    fn op_bgeu(self: *Self, rs1: u8, rs2: u8, imm: i32) void {
-        @setRuntimeSafety(false);
-        if (self.x[rs1] >= self.x[rs2]) {
-            self.pc = @intCast(u32, @intCast(i32, self.pc) + imm);
-        } else {
-            self.pc += 4;
-        }
-    }
 
-    fn op_lw(self: *Self, rd: u8, rs1: u8, imm: i32) void {
-        @setRuntimeSafety(false);
-        self.x[rd] = self.mem.read_32(@intCast(u32, @intCast(i32, self.x[rs1]) + imm));
-    }
-    fn op_lh(self: *Self, rd: u8, rs1: u8, imm: i32) void {
-        @setRuntimeSafety(false);
-        self.x[rd] = @intCast(u32, @intCast(i32, @intCast(i16, self.mem.read_16(@intCast(u32, @intCast(i32, self.x[rs1]) + imm)))));
-    }
-    fn op_lhu(self: *Self, rd: u8, rs1: u8, imm: i32) void {
-        @setRuntimeSafety(false);
-        self.x[rd] = @intCast(u32, self.mem.read_16(@intCast(u32, @intCast(i32, self.x[rs1]) + imm)));
-    }
-    fn op_lb(self: *Self, rd: u8, rs1: u8, imm: i32) void {
-        @setRuntimeSafety(false);
-        self.x[rd] = @intCast(u32, @intCast(i32, @intCast(i8, self.mem.read_8(@intCast(u32, @intCast(i32, self.x[rs1]) + imm)))));
-    }
-    fn op_lbu(self: *Self, rd: u8, rs1: u8, imm: i32) void {
-        @setRuntimeSafety(false);
-        self.x[rd] = @intCast(u32, self.mem.read_8(@intCast(u32, @intCast(i32, self.x[rs1]) + imm)));
-    }
+        fn op_slti(self: *Self, rd: u8, rs1: u8, imm: i32) void {
+            @setRuntimeSafety(false);
+            self.x[rd] = if (@intCast(i32, self.x[rs1]) < imm) 1 else 0;
+            self.pc += 4;
+        }
+        fn op_sltiu(self: *Self, rd: u8, rs1: u8, imm: i32) void {
+            @setRuntimeSafety(false);
+            self.x[rd] = if (self.x[rs1] < @intCast(u32, imm)) 1 else 0;
+            self.pc += 4;
+        }
 
-    fn op_sw(self: *Self, rs1: u8, rs2: u8, imm: i32) void {
-        self.mem.write_32(@intCast(u32, @intCast(i32, self.x[rs1]) + imm), self.x[rs2]);
-    }
-    fn op_sh(self: *Self, rs1: u8, rs2: u8, imm: i32) void {
-        self.mem.write_16(@intCast(u32, @intCast(i32, self.x[rs1]) + imm), @intCast(u16, self.x[rs2] & 0x0000ffff));
-    }
-    fn op_sb(self: *Self, rs1: u8, rs2: u8, imm: i32) void {
-        self.mem.write_8(@intCast(u32, @intCast(i32, self.x[rs1]) + imm), @intCast(u8, self.x[rs2] & 0x000000ff));
-    }
+        fn op_andi(self: *Self, rd: u8, rs1: u8, imm: i32) void {
+            @setRuntimeSafety(false);
+            self.x[rd] = self.x[rs1] & @intCast(u32, imm);
+            self.pc += 4;
+        }
+        fn op_ori(self: *Self, rd: u8, rs1: u8, imm: i32) void {
+            @setRuntimeSafety(false);
+            self.x[rd] = self.x[rs1] | @intCast(u32, imm);
+            self.pc += 4;
+        }
+        fn op_xori(self: *Self, rd: u8, rs1: u8, imm: i32) void {
+            @setRuntimeSafety(false);
+            self.x[rd] = self.x[rs1] ^ @intCast(u32, imm);
+            self.pc += 4;
+        }
 
-    // TODO: op_fence
-};
+        fn op_slli(self: *Self, rd: u8, rs1: u8, shamt: u8) void {
+            self.x[rd] = self.x[rs1] << @intCast(u5, shamt);
+            self.pc += 4;
+        }
+        fn op_srli(self: *Self, rd: u8, rs1: u8, shamt: u8) void {
+            self.x[rd] = self.x[rs1] >> @intCast(u5, shamt);
+            self.pc += 4;
+        }
+        fn op_srai(self: *Self, rd: u8, rs1: u8, shamt: u8) void {
+            @setRuntimeSafety(false);
+            self.x[rd] = @intCast(u32, @intCast(i32, self.x[rs1]) >> @intCast(u5, shamt));
+            self.pc += 4;
+        }
+
+        fn op_lui(self: *Self, rd: u8, imm: i32) void {
+            @setRuntimeSafety(false);
+            self.x[rd] = @intCast(u32, imm);
+            self.pc += 4;
+        }
+        fn op_auipc(self: *Self, rd: u8, imm: i32) void {
+            @setRuntimeSafety(false);
+            self.x[rd] = @intCast(u32, @intCast(i32, self.pc) + imm);
+            self.pc += 4;
+        }
+
+        fn op_add(self: *Self, rd: u8, rs1: u8, rs2: u8) void {
+            @setRuntimeSafety(false);
+            self.x[rd] = self.x[rs1] + self.x[rs2];
+            self.pc += 4;
+        }
+        fn op_sub(self: *Self, rd: u8, rs1: u8, rs2: u8) void {
+            @setRuntimeSafety(false);
+            self.x[rd] = self.x[rs1] - self.x[rs2];
+            self.pc += 4;
+        }
+        fn op_slt(self: *Self, rd: u8, rs1: u8, rs2: u8) void {
+            @setRuntimeSafety(false);
+            self.x[rd] = if (@intCast(i32, self.x[rs1]) < @intCast(i32, self.x[rs2])) 1 else 0;
+            self.pc += 4;
+        }
+        fn op_sltu(self: *Self, rd: u8, rs1: u8, rs2: u8) void {
+            @setRuntimeSafety(false);
+            self.x[rd] = if (self.x[rs1] < self.x[rs2]) 1 else 0;
+            self.pc += 4;
+        }
+        fn op_and(self: *Self, rd: u8, rs1: u8, rs2: u8) void {
+            @setRuntimeSafety(false);
+            self.x[rd] = self.x[rs1] & self.x[rs2];
+            self.pc += 4;
+        }
+        fn op_or(self: *Self, rd: u8, rs1: u8, rs2: u8) void {
+            @setRuntimeSafety(false);
+            self.x[rd] = self.x[rs1] | self.x[rs2];
+            self.pc += 4;
+        }
+        fn op_xor(self: *Self, rd: u8, rs1: u8, rs2: u8) void {
+            @setRuntimeSafety(false);
+            self.x[rd] = self.x[rs1] ^ self.x[rs2];
+            self.pc += 4;
+        }
+
+        fn op_sll(self: *Self, rd: u8, rs1: u8, rs2: u8) void {
+            self.x[rd] = self.x[rs1] << @intCast(u5, self.x[rs2] & 0b11111);
+            self.pc += 4;
+        }
+        fn op_srl(self: *Self, rd: u8, rs1: u8, rs2: u8) void {
+            self.x[rd] = self.x[rs1] >> @intCast(u5, self.x[rs2] & 0b11111);
+            self.pc += 4;
+        }
+        fn op_sra(self: *Self, rd: u8, rs1: u8, rs2: u8) void {
+            @setRuntimeSafety(false);
+            self.x[rd] = @intCast(u32, @intCast(i32, self.x[rs1]) >> @intCast(u5, self.x[rs2] & 0b11111));
+            self.pc += 4;
+        }
+
+        fn op_jal(self: *Self, rd: u8, imm: i32) void {
+            @setRuntimeSafety(false);
+            self.x[rd] = self.pc + 4;
+            self.pc = @intCast(u32, @intCast(i32, self.pc) + imm);
+        }
+        fn op_j(self: *Self, imm: i32) void {
+            @setRuntimeSafety(false);
+            self.pc = @intCast(u32, @intCast(i32, self.pc) + imm);
+        }
+        fn op_jalr(self: *Self, rd: u8, rs1: u8, imm: i32) void {
+            @setRuntimeSafety(false);
+            self.x[rd] = self.pc + 4;
+            self.pc = @intCast(u32, @intCast(i32, self.x[rs1]) + imm) & 0b11111111111111111111111111111110;
+        }
+
+        fn op_beq(self: *Self, rs1: u8, rs2: u8, imm: i32) void {
+            @setRuntimeSafety(false);
+            if (self.x[rs1] == self.x[rs2]) {
+                self.pc = @intCast(u32, @intCast(i32, self.pc) + imm);
+            } else {
+                self.pc += 4;
+            }
+        }
+        fn op_bne(self: *Self, rs1: u8, rs2: u8, imm: i32) void {
+            @setRuntimeSafety(false);
+            if (self.x[rs1] != self.x[rs2]) {
+                self.pc = @intCast(u32, @intCast(i32, self.pc) + imm);
+            } else {
+                self.pc += 4;
+            }
+        }
+        fn op_blt(self: *Self, rs1: u8, rs2: u8, imm: i32) void {
+            @setRuntimeSafety(false);
+            if (@intCast(i32, self.x[rs1]) < @intCast(i32, self.x[rs2])) {
+                self.pc = @intCast(u32, @intCast(i32, self.pc) + imm);
+            } else {
+                self.pc += 4;
+            }
+        }
+        fn op_bltu(self: *Self, rs1: u8, rs2: u8, imm: i32) void {
+            @setRuntimeSafety(false);
+            if (self.x[rs1] < self.x[rs2]) {
+                self.pc = @intCast(u32, @intCast(i32, self.pc) + imm);
+            } else {
+                self.pc += 4;
+            }
+        }
+        fn op_bge(self: *Self, rs1: u8, rs2: u8, imm: i32) void {
+            @setRuntimeSafety(false);
+            if (@intCast(i32, self.x[rs1]) >= @intCast(i32, self.x[rs2])) {
+                self.pc = @intCast(u32, @intCast(i32, self.pc) + imm);
+            } else {
+                self.pc += 4;
+            }
+        }
+        fn op_bgeu(self: *Self, rs1: u8, rs2: u8, imm: i32) void {
+            @setRuntimeSafety(false);
+            if (self.x[rs1] >= self.x[rs2]) {
+                self.pc = @intCast(u32, @intCast(i32, self.pc) + imm);
+            } else {
+                self.pc += 4;
+            }
+        }
+
+        fn op_lw(self: *Self, rd: u8, rs1: u8, imm: i32) void {
+            @setRuntimeSafety(false);
+            self.x[rd] = self.mem.read_32(@intCast(u32, @intCast(i32, self.x[rs1]) + imm));
+            self.pc += 4;
+        }
+        fn op_lh(self: *Self, rd: u8, rs1: u8, imm: i32) void {
+            @setRuntimeSafety(false);
+            self.x[rd] = @intCast(u32, @intCast(i32, @intCast(i16, self.mem.read_16(@intCast(u32, @intCast(i32, self.x[rs1]) + imm)))));
+            self.pc += 4;
+        }
+        fn op_lhu(self: *Self, rd: u8, rs1: u8, imm: i32) void {
+            @setRuntimeSafety(false);
+            self.x[rd] = @intCast(u32, self.mem.read_16(@intCast(u32, @intCast(i32, self.x[rs1]) + imm)));
+            self.pc += 4;
+        }
+        fn op_lb(self: *Self, rd: u8, rs1: u8, imm: i32) void {
+            @setRuntimeSafety(false);
+            self.x[rd] = @intCast(u32, @intCast(i32, @intCast(i8, self.mem.read_8(@intCast(u32, @intCast(i32, self.x[rs1]) + imm)))));
+            self.pc += 4;
+        }
+        fn op_lbu(self: *Self, rd: u8, rs1: u8, imm: i32) void {
+            @setRuntimeSafety(false);
+            self.x[rd] = @intCast(u32, self.mem.read_8(@intCast(u32, @intCast(i32, self.x[rs1]) + imm)));
+            self.pc += 4;
+        }
+
+        fn op_sw(self: *Self, rs1: u8, rs2: u8, imm: i32) void {
+            @setRuntimeSafety(false);
+            self.mem.write_32(@intCast(u32, @intCast(i32, self.x[rs1]) + imm), self.x[rs2]);
+            self.pc += 4;
+        }
+        fn op_sh(self: *Self, rs1: u8, rs2: u8, imm: i32) void {
+            @setRuntimeSafety(false);
+            self.mem.write_16(@intCast(u32, @intCast(i32, self.x[rs1]) + imm), @intCast(u16, self.x[rs2] & 0x0000ffff));
+            self.pc += 4;
+        }
+        fn op_sb(self: *Self, rs1: u8, rs2: u8, imm: i32) void {
+            @setRuntimeSafety(false);
+            self.mem.write_8(@intCast(u32, @intCast(i32, self.x[rs1]) + imm), @intCast(u8, self.x[rs2] & 0x000000ff));
+            self.pc += 4;
+        }
+
+        fn op_fence(self: *Self, rd: u8, rs1: u8, imm: i32) void {
+            _ = rd;
+            _ = rs1;
+            _ = imm;
+            log_debug(@src(), "Unimplemented fence", .{});
+            self.pc += 4;
+        }
+        fn op_ecall(self: *Self) void {
+            _ = self;
+            debug.panic("Unimplemented", .{});
+        }
+        fn op_ebreak(self: *Self) void {
+            _ = self;
+            debug.panic("Unimplemented", .{});
+        }
+        fn op_uret(self: *Self) void {
+            _ = self;
+            debug.panic("Unimplemented", .{});
+        }
+        fn op_sret(self: *Self) void {
+            _ = self;
+            debug.panic("Unimplemented", .{});
+        }
+        fn op_mret(self: *Self) void {
+            log_debug(@src(), "Unimplemented mret", .{});
+            self.pc = self.csr[CSR_MEPC];
+        }
+        fn op_wfi(self: *Self) void {
+            _ = self;
+            debug.panic("Unimplemented", .{});
+        }
+        fn op_csrrw(self: *Self, rd: u8, rs1: u8, imm: i32) void {
+            log_debug(@src(), "Unimplemented csrrw", .{});
+            self.x[rd] = 0;
+            const csr = @intCast(usize, imm & 0b111111111111);
+            self.csr[csr] = self.x[rs1];
+            self.pc += 4;
+        }
+        fn op_csrrs(self: *Self, rd: u8, rs1: u8, imm: i32) void {
+            _ = rs1;
+            _ = imm;
+            log_debug(@src(), "Unimplemented csrrs", .{});
+            self.x[rd] = 0;
+            self.pc += 4;
+        }
+        fn op_csrrc(self: *Self, rd: u8, rs1: u8, imm: i32) void {
+            _ = rs1;
+            _ = imm;
+            log_debug(@src(), "Unimplemented csrrc", .{});
+            self.x[rd] = 0;
+            self.pc += 4;
+        }
+        fn op_csrrwi(self: *Self, rd: u8, rs1: u8, imm: i32) void {
+            _ = rs1;
+            _ = imm;
+            log_debug(@src(), "Unimplemented csrrwi", .{});
+            self.x[rd] = 0;
+            self.pc += 4;
+        }
+        fn op_csrrsi(self: *Self, rd: u8, rs1: u8, imm: i32) void {
+            _ = rs1;
+            _ = imm;
+            log_debug(@src(), "Unimplemented csrrsi", .{});
+            self.x[rd] = 0;
+            self.pc += 4;
+        }
+        fn op_csrrci(self: *Self, rd: u8, rs1: u8, imm: i32) void {
+            _ = rs1;
+            _ = imm;
+            log_debug(@src(), "Unimplemented csrrci", .{});
+            self.x[rd] = 0;
+            self.pc += 4;
+        }
+        fn op_nop(self: *Self) void {
+            self.pc += 4;
+        }
+    };
+}
 
 pub fn example_disassemble() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -1219,11 +1366,20 @@ pub fn main() !void {
         .ram_offset = 0x0,
         .ram = &[_]u8{},
     };
-    var cpu = Cpu.init(mem);
+    var cpu = Cpu(BasicMem).init(mem);
     cpu.pc = 0x80000000;
-    var i = 0;
-    while (i < 0x100) : (i += 1) {
-        cpu.step();
+    var i: usize = 0;
+    while (i < 0x200) : (i += 1) {
+        const word = cpu.mem.read_32(cpu.pc);
+        const ins_result = decode_ins(word);
+        std.debug.print("{x:0>8}:  {x:0>8}  ", .{ cpu.pc, word });
+        if (ins_result) |ins| {
+            std.debug.print("{}\n", .{InstructionFmt{ .addr = cpu.pc, .ins = ins }});
+        } else |err| switch (err) {
+            error.InvalidInstruction => std.debug.print("Invalid\n", .{}),
+        }
+        try cpu.step();
+        // std.debug.print("x: {any}\n", .{cpu.x});
     }
 }
 
