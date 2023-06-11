@@ -77,13 +77,16 @@ const Opcode = enum {
     ECALL,
     EBREAK,
 
-    // “Zicsr”, Control and Status Register (CSR) Instructions, Version 2.0
+    // "Zicsr", Control and Status Register (CSR) Instructions, Version 2.0
     CSRRW,
     CSRRS,
     CSRRC,
     CSRRWI,
     CSRRSI,
     CSRRCI,
+
+    // "Zifencei", Instruction-Fetch Fence, Version 2.0
+    FENCEI,
 
     // Privileged Instruction Set
     URET,
@@ -106,7 +109,7 @@ const Opcode = enum {
             .ADDI, .SLTI, .SLTIU, .XORI, .ORI, .ANDI => FormatType.I,
             .SLLI, .SRLI, .SRAI => FormatType.I,
             .ADD, .SUB, .SLL, .SLT, .SLTU, .XOR, .SRL, .SRA, .OR, .AND, .NOP => FormatType.R,
-            .FENCE, .ECALL, .EBREAK, .CSRRW, .CSRRS, .CSRRC, .CSRRWI, .CSRRSI, .CSRRCI, .URET, .SRET, .MRET, .WFI => FormatType.I,
+            .FENCE, .ECALL, .EBREAK, .CSRRW, .CSRRS, .CSRRC, .CSRRWI, .CSRRSI, .CSRRCI, .FENCEI, .URET, .SRET, .MRET, .WFI => FormatType.I,
         };
     }
 
@@ -158,6 +161,7 @@ const Opcode = enum {
             .CSRRWI => "CSRRWI",
             .CSRRSI => "CSRRSI",
             .CSRRCI => "CSRRCI",
+            .FENCEI => "FENCEI",
             .URET => "URET",
             .SRET => "SRET",
             .MRET => "MRET",
@@ -215,23 +219,33 @@ const InstructionFmt = struct {
                     return;
                 }
             },
-            .CSRRS => {
-                if (ins.rs1 == 0) {
-                    try writer.print("CSRR {s}, 0x{x:0>2}", .{ reg_abi[ins.rd], imm_u32 });
-                    return;
+            .CSRRS, .CSRRW, .CSRRC, .CSRRSI, .CSRRCI, .CSRRWI => {
+                const csr = CSR_LIST[imm_u32];
+                var buf: [16]u8 = undefined;
+                var csr_str = csr.name;
+                if (csr.name[0] == '?') {
+                    csr_str = std.fmt.bufPrint(buf[0..], "0x{x:0>3}", .{imm_u32}) catch unreachable;
                 }
-            },
-            .CSRRW => {
-                if (ins.rd == 0) {
-                    try writer.print("CSRW 0x{x:0>2}, {s}", .{ imm_u32, reg_abi[ins.rs1] });
-                    return;
+                if (ins.op == .CSRRS and ins.rs1 == 0) {
+                    try writer.print("CSRR {s}, {s}", .{ reg_abi[ins.rd], csr_str });
+                } else if (ins.op == .CSRRW and ins.rd == 0) {
+                    try writer.print("CSRW {s}, {s}", .{ csr_str, reg_abi[ins.rs1] });
+                } else if (ins.op == .CSRRS and ins.rd == 0) {
+                    try writer.print("CSRS {s}, {s}", .{ csr_str, reg_abi[ins.rs1] });
+                } else if (ins.op == .CSRRC and ins.rd == 0) {
+                    try writer.print("CSRC {s}, {s}", .{ csr_str, reg_abi[ins.rs1] });
+                } else if (ins.op == .CSRRWI and ins.rd == 0) {
+                    try writer.print("CSRWI {s}, 0x{x:0>2}", .{ csr_str, ins.rs1 });
+                } else if (ins.op == .CSRRSI and ins.rd == 0) {
+                    try writer.print("CSRSI {s}, 0x{x:0>2}", .{ csr_str, ins.rs1 });
+                } else if (ins.op == .CSRRCI and ins.rd == 0) {
+                    try writer.print("CSRCI {s}, 0x{x:0>2}", .{ csr_str, ins.rs1 });
+                } else if (ins.op == .CSRRS or ins.op == .CSRRW or ins.op == .CSRRC) {
+                    try writer.print("{s} {s}, {s}, {s}", .{ ins.op.str(), reg_abi[ins.rd], csr_str, reg_abi[ins.rs1] });
+                } else if (ins.op == .CSRRSI or ins.op == .CSRRWI or ins.op == .CSRRCI) {
+                    try writer.print("{s} {s}, {s}, 0x{x:0>2}", .{ ins.op.str(), reg_abi[ins.rd], csr_str, ins.rs1 });
                 }
-            },
-            .CSRRWI => {
-                if (ins.rd == 0) {
-                    try writer.print("CSRWI 0x{x:0>2}, {}", .{ imm_u32, ins.rs1 });
-                    return;
-                }
+                return;
             },
             .J => {
                 try writer.print("J 0x{x}", .{addr_imm});
@@ -355,7 +369,10 @@ const OP_FUNCT3 = enum(u32) {
     AND = 0b111,
 };
 
-const FENCE_FUNCT3: u32 = 0b000;
+const MISC_MEM_FUNCT3 = enum(u32) {
+    FENCE = 0b000,
+    FENCEI = 0b001,
+};
 
 const ADDSUB_IMM_HI = enum(u32) {
     ADD = 0b0000000,
@@ -646,7 +663,8 @@ fn decode(comptime T: type, self: *T, ins: u32) !T.ReturnType {
             const rs1 = decode_rs1(ins);
             const imm = decode_i_imm(ins);
             return switch (ins & MASK_FUNCT3) {
-                FENCE_FUNCT3 << SHIFT_FUNCT3 => self.op_fence(rd, rs1, imm),
+                @enumToInt(MISC_MEM_FUNCT3.FENCE) << SHIFT_FUNCT3 => self.op_fence(rd, rs1, imm),
+                @enumToInt(MISC_MEM_FUNCT3.FENCEI) << SHIFT_FUNCT3 => self.op_fencei(rd, rs1, imm),
                 else => blk: {
                     log_debug(@src(), "Invalid MISC_MEM FUNCT3 {b:0>3}", .{(ins & MASK_FUNCT3) >> SHIFT_FUNCT3});
                     break :blk error.InvalidInstruction;
@@ -906,6 +924,10 @@ const Decoder = struct {
         _ = self;
         return i_type(.CSRRCI, rd, rs1, imm);
     }
+    fn op_fencei(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
+        _ = self;
+        return i_type(.FENCEI, rd, rs1, imm);
+    }
     fn op_fence(self: *Self, rd: u8, rs1: u8, imm: i32) Instruction {
         _ = self;
         return i_type(.FENCE, rd, rs1, imm);
@@ -949,7 +971,7 @@ const BasicMem = struct {
         if (self.rom_offset <= addr and addr < self.rom_offset + self.rom.len) {
             return self.rom[addr - self.rom_offset];
         }
-        debug.panic("Invalid memory access at {x}", .{addr});
+        debug.panic("Invalid memory read at 0x{x}", .{addr});
     }
     fn read_16(self: *Self, addr: u32) u16 {
         const lo = self.read_8(addr);
@@ -964,20 +986,250 @@ const BasicMem = struct {
         return @as(u32, lo0) | (@as(u32, lo1) << 8) | (@as(u32, hi0) << 16) | (@as(u32, hi1) << 24);
     }
     fn write_8(self: *Self, addr: u32, value: u8) void {
-        _ = self;
-        debug.panic("Invalid memory write of {x} at {x}", .{ value, addr });
+        if (self.ram_offset <= addr and addr < self.ram_offset + self.ram.len) {
+            self.ram[addr - self.ram_offset] = value;
+            return;
+        }
+        debug.panic("Invalid memory write at 0x{x} of 0x{x}", .{ addr, value });
     }
     fn write_16(self: *Self, addr: u32, value: u16) void {
-        _ = self;
-        debug.panic("Invalid memory write of {x} at {x}", .{ value, addr });
+        self.write_8(addr, @intCast(u8, value & 0x00ff));
+        self.write_8(addr + 1, @intCast(u8, (value & 0xff00) >> 8));
     }
     fn write_32(self: *Self, addr: u32, value: u32) void {
-        _ = self;
-        debug.panic("Invalid memory write of {x} at {x}", .{ value, addr });
+        self.write_8(addr, @intCast(u8, value & 0x000000ff));
+        self.write_8(addr + 1, @intCast(u8, (value & 0x0000ff00) >> 8));
+        self.write_8(addr + 2, @intCast(u8, (value & 0x00ff0000) >> 16));
+        self.write_8(addr + 3, @intCast(u8, (value & 0xff000000) >> 24));
     }
 };
 
+const PrivLvl = enum(u8) {
+    U = 0b00, // User
+    S = 0b01, // Supervisor
+    M = 0b11, // Machine
+};
+
+const CSR_USTATUS: u32 = 0x000;
+const CSR_UIE: u32 = 0x004;
+const CSR_UTVEC: u32 = 0x005;
+
+const CSR_USCRATCH: u32 = 0x040;
+const CSR_UEPC: u32 = 0x041;
+const CSR_UCAUSE: u32 = 0x042;
+const CSR_UBADADDR: u32 = 0x43;
+const CSR_UIP: u32 = 0x44;
+
+const CSR_FFLAGS: u32 = 0x001;
+const CSR_FRM: u32 = 0x002;
+const CSR_FCSR: u32 = 0x003;
+
+const CSR_CYCLE: u32 = 0xc00;
+const CSR_TIME: u32 = 0xc01;
+const CSR_INSRET: u32 = 0xc02;
+// i in 3..=31
+const CSR_HPMCOUNTER0: u32 = 0xc00;
+const CSR_CYCLEH: u32 = 0xc80;
+const CSR_TIMEH: u32 = 0xc81;
+const CSR_INSRETH: u32 = 0xc82;
+// i in 3..=31
+const CSR_HPMCOUNTER0H: u32 = 0xc80;
+
+const CSR_SSTATUS: u32 = 0x100;
+const CSR_SEDELEG: u32 = 0x102;
+const CSR_SIDELEG: u32 = 0x103;
+const CSR_SIE: u32 = 0x104;
+const CSR_STVEC: u32 = 0x105;
+
+const CSR_SSCRATCH: u32 = 0x140;
+const CSR_SEPC: u32 = 0x141;
+const CSR_SCAUSE: u32 = 0x142;
+const CSR_SBADADDR: u32 = 0x143;
+const CSR_SIP: u32 = 0x144;
+
+const CSR_SPTBR: u32 = 0x180;
+
+const CSR_HSTATUS: u32 = 0x200;
+const CSR_HEDELEG: u32 = 0x202;
+const CSR_HIDELEG: u32 = 0x203;
+const CSR_HIE: u32 = 0x204;
+const CSR_HTVEC: u32 = 0x205;
+
+const CSR_HSCRATCH: u32 = 0x240;
+const CSR_HEPC: u32 = 0x241;
+const CSR_HCAUSE: u32 = 0x242;
+const CSR_HBADADDR: u32 = 0x243;
+const CSR_HIP: u32 = 0x244;
+
+const CSR_MVENDRORID: u32 = 0xf11;
+const CSR_MARCHID: u32 = 0xf12;
+const CSR_MIMPID: u32 = 0xf13;
+const CSR_MHARTID: u32 = 0xf14;
+
+const CSR_MSTATUS: u32 = 0x300;
+const CSR_MISA: u32 = 0x301;
+const CSR_MEDELEG: u32 = 0x302;
+const CSR_MIDELEG: u32 = 0x303;
+const CSR_MIE: u32 = 0x304;
+const CSR_MTVEC: u32 = 0x305;
+
+const CSR_MSCRATCH: u32 = 0x340;
 const CSR_MEPC: u32 = 0x341;
+const CSR_MCAUSE: u32 = 0x342;
+const CSR_MBADADDR: u32 = 0x343;
+const CSR_MIP: u32 = 0x344;
+
+const CSR_MBASE: u32 = 0x380;
+const CSR_MBOUND: u32 = 0x381;
+const CSR_MIBASE: u32 = 0x382;
+const CSR_MIBOUND: u32 = 0x383;
+const CSR_MDBASE: u32 = 0x384;
+const CSR_MDBOUND: u32 = 0x385;
+
+const CSR_MCYCLE: u32 = 0xb00;
+const CSR_MINSTRET: u32 = 0xb02;
+// i in 3..=31
+const CSR_MHPMCOUNTER0: u32 = 0xb00;
+const CSR_MCYCLEH: u32 = 0xb80;
+const CSR_MINSTRETH: u32 = 0xb82;
+// i in 3..=31
+const CSR_MHPMCOUNTER0H: u32 = 0xb80;
+
+const CSR_MUCOUNTEREN: u32 = 0x320;
+const CSR_MSCOUNTERN: u32 = 0x321;
+const CSR_MHCOUNTERN: u32 = 0x322;
+const CSR_MHPMEVENT3: u32 = 0x323;
+const CSR_MHPMEVENT4: u32 = 0x324;
+const CSR_MHPMEVENT31: u32 = 0x33f;
+
+const CSR_TSELECT: u32 = 0x7a0;
+const CSR_TDATA1: u32 = 0x7a1;
+const CSR_TDATA2: u32 = 0x7a2;
+const CSR_TDATA3: u32 = 0x7a3;
+
+const CSR_DCSR: u32 = 0x7b0;
+const CSR_DPC: u32 = 0x7b1;
+const CSR_DSCRATCH: u32 = 0x7b2;
+
+const Priv = enum {
+    URW,
+    URO,
+    SRW,
+    SRO,
+    HRW,
+    HRO,
+    MRW,
+    MRO,
+    DRW,
+    DRO,
+    UNK,
+};
+
+const CSR = struct {
+    name: []const u8,
+    priv: Priv,
+};
+
+fn csr_list() [4096]CSR {
+    var csrs = [_]CSR{.{ .name = "?", .priv = .UNK }} ** 4096;
+    comptime var i: usize = 3;
+    csrs[CSR_USTATUS] = .{ .name = "ustatus", .priv = .URW };
+    csrs[CSR_UIE] = .{ .name = "uie", .priv = .URW };
+    csrs[CSR_UTVEC] = .{ .name = "utvec", .priv = .URW };
+    csrs[CSR_USCRATCH] = .{ .name = "uscratch", .priv = .URW };
+    csrs[CSR_UEPC] = .{ .name = "uepc", .priv = .URW };
+    csrs[CSR_UCAUSE] = .{ .name = "ucause", .priv = .URW };
+    csrs[CSR_UBADADDR] = .{ .name = "ubadaddr", .priv = .URW };
+    csrs[CSR_UIP] = .{ .name = "uip", .priv = .URW };
+    csrs[CSR_FFLAGS] = .{ .name = "fflags", .priv = .URW };
+    csrs[CSR_FRM] = .{ .name = "frm", .priv = .URW };
+    csrs[CSR_FCSR] = .{ .name = "fcsr", .priv = .URW };
+    csrs[CSR_CYCLE] = .{ .name = "cycle", .priv = .URO };
+    csrs[CSR_TIME] = .{ .name = "time", .priv = .URO };
+    csrs[CSR_INSRET] = .{ .name = "insret", .priv = .URO };
+    i = 3;
+    inline while (i < 32) : (i += 1) {
+        csrs[CSR_HPMCOUNTER0 + i] = .{ .name = std.fmt.comptimePrint("hpmcounter{}", .{i}), .priv = .MRW };
+    }
+    csrs[CSR_CYCLEH] = .{ .name = "cycleh", .priv = .URO };
+    csrs[CSR_TIMEH] = .{ .name = "timeh", .priv = .URO };
+    csrs[CSR_INSRETH] = .{ .name = "insreth", .priv = .URO };
+    i = 3;
+    inline while (i < 32) : (i += 1) {
+        csrs[CSR_HPMCOUNTER0H + i] = .{ .name = std.fmt.comptimePrint("hpmcounter{}h", .{i}), .priv = .MRW };
+    }
+    csrs[CSR_SSTATUS] = .{ .name = "sstatus", .priv = .SRW };
+    csrs[CSR_SEDELEG] = .{ .name = "sedeleg", .priv = .SRW };
+    csrs[CSR_SIDELEG] = .{ .name = "sideleg", .priv = .SRW };
+    csrs[CSR_SIE] = .{ .name = "sie", .priv = .SRW };
+    csrs[CSR_STVEC] = .{ .name = "stvec", .priv = .SRW };
+    csrs[CSR_SSCRATCH] = .{ .name = "sscratch", .priv = .SRW };
+    csrs[CSR_SEPC] = .{ .name = "sepc", .priv = .SRW };
+    csrs[CSR_SCAUSE] = .{ .name = "scause", .priv = .SRW };
+    csrs[CSR_SBADADDR] = .{ .name = "sbadaddr", .priv = .SRW };
+    csrs[CSR_SIP] = .{ .name = "sip", .priv = .SRW };
+    csrs[CSR_SPTBR] = .{ .name = "sptbr", .priv = .SRW };
+    csrs[CSR_HSTATUS] = .{ .name = "hstatus", .priv = .HRW };
+    csrs[CSR_HEDELEG] = .{ .name = "hedeleg", .priv = .HRW };
+    csrs[CSR_HIDELEG] = .{ .name = "hideleg", .priv = .HRW };
+    csrs[CSR_HIE] = .{ .name = "hie", .priv = .HRW };
+    csrs[CSR_HTVEC] = .{ .name = "htvec", .priv = .HRW };
+    csrs[CSR_HSCRATCH] = .{ .name = "hscratch", .priv = .HRW };
+    csrs[CSR_HEPC] = .{ .name = "hepc", .priv = .HRW };
+    csrs[CSR_HCAUSE] = .{ .name = "hcause", .priv = .HRW };
+    csrs[CSR_HBADADDR] = .{ .name = "hbadaddr", .priv = .HRW };
+    csrs[CSR_HIP] = .{ .name = "hip", .priv = .HRW };
+    csrs[CSR_MVENDRORID] = .{ .name = "mvendrorid", .priv = .MRO };
+    csrs[CSR_MARCHID] = .{ .name = "marchid", .priv = .MRO };
+    csrs[CSR_MIMPID] = .{ .name = "mimpid", .priv = .MRO };
+    csrs[CSR_MHARTID] = .{ .name = "mhartid", .priv = .MRO };
+    csrs[CSR_MSTATUS] = .{ .name = "mstatus", .priv = .MRW };
+    csrs[CSR_MISA] = .{ .name = "misa", .priv = .MRW };
+    csrs[CSR_MEDELEG] = .{ .name = "medeleg", .priv = .MRW };
+    csrs[CSR_MIDELEG] = .{ .name = "mideleg", .priv = .MRW };
+    csrs[CSR_MIE] = .{ .name = "mie", .priv = .MRW };
+    csrs[CSR_MTVEC] = .{ .name = "mtvec", .priv = .MRW };
+    csrs[CSR_MSCRATCH] = .{ .name = "mscratch", .priv = .MRW };
+    csrs[CSR_MEPC] = .{ .name = "mepc", .priv = .MRW };
+    csrs[CSR_MCAUSE] = .{ .name = "mcause", .priv = .MRW };
+    csrs[CSR_MBADADDR] = .{ .name = "mbadaddr", .priv = .MRW };
+    csrs[CSR_MIP] = .{ .name = "mip", .priv = .MRW };
+    csrs[CSR_MBASE] = .{ .name = "mbase", .priv = .MRW };
+    csrs[CSR_MBOUND] = .{ .name = "mbound", .priv = .MRW };
+    csrs[CSR_MIBASE] = .{ .name = "mibase", .priv = .MRW };
+    csrs[CSR_MIBOUND] = .{ .name = "mibound", .priv = .MRW };
+    csrs[CSR_MDBASE] = .{ .name = "mdbase", .priv = .MRW };
+    csrs[CSR_MDBOUND] = .{ .name = "mdbound", .priv = .MRW };
+    csrs[CSR_MCYCLE] = .{ .name = "mcycle", .priv = .MRW };
+    csrs[CSR_MINSTRET] = .{ .name = "minstret", .priv = .MRW };
+    i = 3;
+    inline while (i < 32) : (i += 1) {
+        csrs[CSR_MHPMCOUNTER0 + i] = .{ .name = std.fmt.comptimePrint("mhpmcounter{}", .{i}), .priv = .MRW };
+    }
+    csrs[CSR_MCYCLEH] = .{ .name = "mcycleh", .priv = .MRW };
+    csrs[CSR_MINSTRETH] = .{ .name = "minstreth", .priv = .MRW };
+    i = 3;
+    inline while (i < 32) : (i += 1) {
+        csrs[CSR_MHPMCOUNTER0H + i] = .{ .name = std.fmt.comptimePrint("mhpmcounter{}h", .{i}), .priv = .MRW };
+    }
+    csrs[CSR_MUCOUNTEREN] = .{ .name = "mucounteren", .priv = .MRW };
+    csrs[CSR_MSCOUNTERN] = .{ .name = "mscountern", .priv = .MRW };
+    csrs[CSR_MHCOUNTERN] = .{ .name = "mhcountern", .priv = .MRW };
+    csrs[CSR_MHPMEVENT3] = .{ .name = "mhpmevent3", .priv = .MRW };
+    csrs[CSR_MHPMEVENT4] = .{ .name = "mhpmevent4", .priv = .MRW };
+    csrs[CSR_MHPMEVENT31] = .{ .name = "mhpmevent31", .priv = .MRW };
+    csrs[CSR_TSELECT] = .{ .name = "tselect", .priv = .MRW };
+    csrs[CSR_TDATA1] = .{ .name = "tdata1", .priv = .MRW };
+    csrs[CSR_TDATA2] = .{ .name = "tdata2", .priv = .MRW };
+    csrs[CSR_TDATA3] = .{ .name = "tdata3", .priv = .MRW };
+    csrs[CSR_DCSR] = .{ .name = "dcsr", .priv = .DRW };
+    csrs[CSR_DPC] = .{ .name = "dpc", .priv = .DRW };
+    csrs[CSR_DSCRATCH] = .{ .name = "dscratch", .priv = .DRW };
+
+    return csrs;
+}
+
+const CSR_LIST = csr_list();
 
 pub fn Cpu(comptime MemType: type) type {
     return struct {
@@ -1237,7 +1489,7 @@ pub fn Cpu(comptime MemType: type) type {
             self.pc += 4;
         }
         fn op_ecall(self: *Self) void {
-            _ = self;
+            log_debug(@src(), "ecall a0: {x}, a1: {x}", .{ self.x[10], self.x[11] });
             debug.panic("Unimplemented", .{});
         }
         fn op_ebreak(self: *Self) void {
@@ -1299,6 +1551,13 @@ pub fn Cpu(comptime MemType: type) type {
             _ = rs1;
             _ = imm;
             log_debug(@src(), "Unimplemented csrrci", .{});
+            self.x[rd] = 0;
+            self.pc += 4;
+        }
+        fn op_fencei(self: *Self, rd: u8, rs1: u8, imm: i32) void {
+            _ = rs1;
+            _ = imm;
+            log_debug(@src(), "Unimplemented fencei", .{});
             self.x[rd] = 0;
             self.pc += 4;
         }
@@ -1448,4 +1707,59 @@ test "decode_exec" {
 test "decode0" {
     const ins = Cpu.decode_ins(0b00000000011001000000000110110011);
     std.debug.print("{}\n", .{ins});
+}
+
+fn test_exec_bin(allocator: std.mem.Allocator, bin_path: []u8) !Cpu(BasicMem) {
+    var rom_file = try std.fs.cwd().openFile(bin_path, .{ .mode = .read_only });
+    defer rom_file.close();
+
+    try rom_file.seekTo(0);
+    const rom = try rom_file.readToEndAlloc(allocator, 0x8000);
+    defer allocator.free(rom);
+    var ram = try allocator.alloc(u8, 4069);
+    defer allocator.free(ram);
+    var mem = BasicMem{
+        .rom_offset = 0x80000000,
+        .rom = rom,
+        .ram_offset = 0x80002000,
+        .ram = ram,
+    };
+    var cpu = Cpu(BasicMem).init(mem);
+    cpu.pc = 0x80000000;
+    var i: usize = 0;
+    while (i < 0x1000) : (i += 1) {
+        const word = cpu.mem.read_32(cpu.pc);
+        const ins_result = decode_ins(word);
+        // std.debug.print("{x:0>8}:  {x:0>8}  ", .{ cpu.pc, word });
+        if (ins_result) |ins| {
+            // std.debug.print("{}\n", .{InstructionFmt{ .addr = cpu.pc, .ins = ins }});
+            if (ins.op == .ECALL) {
+                return cpu;
+            }
+        } else |err| switch (err) {
+            error.InvalidInstruction => std.debug.print("Invalid\n", .{}),
+        }
+        try cpu.step();
+        // std.debug.print("x: {any}\n", .{cpu.x});
+    }
+    return error.TooManySteps;
+}
+
+test "rv32ui" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const instructions = [_][]const u8{ "add", "addi", "and", "andi", "auipc", "beq", "bge", "bgeu", "blt", "bltu", "bne", "fence_i", "jal", "jalr", "lb", "lbu", "lh", "lhu", "lui", "lw", "ma_data", "or", "ori", "sb", "sh", "simple", "sll", "slli", "slt", "slti", "sltiu", "sltu", "sra", "srai", "srl", "srli", "sub", "sw", "xor", "xori" };
+    for (instructions) |instruction| {
+        std.debug.print("> {s}\n", .{instruction});
+        var bin_path = try std.fmt.allocPrint(allocator, "riscv-tests/isa/rv32ui-p-{s}.bin", .{instruction});
+        defer allocator.free(bin_path);
+        const cpu = try test_exec_bin(allocator, bin_path);
+        if (cpu.x[10] == 0) {
+            std.debug.print("  OK\n", .{});
+        } else {
+            std.debug.print("  ERR: {}\n", .{cpu.x[10]});
+        }
+    }
 }
